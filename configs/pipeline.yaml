@@ -1,0 +1,123 @@
+# VLM Preprocessing Pipeline -- Main Configuration
+# Every configurable parameter for the pipeline lives here.
+# Behavior is changed by editing this file, not by editing code.
+# Sub-sections: dataset, image, tokenizer, shard, and top-level pipeline
+# parameters.
+
+# Dataset source and column mapping
+dataset:
+  # HuggingFace dataset identifier
+  hf_dataset_id: "trannhiem/TranNhiem-Vietnamese-ImageText-Reasoning"
+
+  # HuggingFace dataset configuration/subset name
+  # "preview" = flat schema (~300 rows), "full" = conversation schema (~544K rows)
+  hf_config_name: "preview"
+
+  # Dataset split to load
+  split: "train"
+
+  # Map canonical field names to dataset-specific column names.
+  # Change these when switching to a different VQA dataset -- no code changes needed.
+  column_mapping:
+    image: "image"            # column containing the image (PIL or bytes)
+    question: "question"      # column containing the question text
+    answer: "model_answer"    # column containing the answer text
+    id: "id"                  # column containing the sample id (optional)
+    reasoning: "model_reasoning"  # column containing reasoning text (optional, stored in metadata)
+
+  # Limit number of samples to process (null = process all).
+  # Useful for debugging and fast iteration.
+  max_samples: null
+
+  # Whether to use HuggingFace streaming mode (avoids downloading the full dataset)
+  streaming: false
+
+# Image preprocessing
+image:
+  # Target image dimensions (height, width) after resize/crop
+  target_size: [384, 384]
+
+  # Resize strategy:
+  #   "resize_and_pad" -- resize longest side to target, pad shorter side
+  #   "center_crop"    -- resize shortest side to target, center crop
+  #   "resize"         -- resize to exact target dimensions (may distort)
+  resize_strategy: "resize_and_pad"
+
+  # Target color space after decoding
+  color_space: "RGB"
+
+  # Per-channel normalization mean (ImageNet default)
+  normalization_mean: [0.485, 0.456, 0.406]
+
+  # Per-channel normalization std (ImageNet default)
+  normalization_std: [0.229, 0.224, 0.225]
+
+  # Interpolation method for resizing
+  # Options: "bicubic", "bilinear", "lanczos", "nearest"
+  interpolation: "bicubic"
+
+  # Pixel value used for padding (0-255)
+  pad_value: 0
+
+# Text tokenization
+tokenizer:
+  # Pretrained tokenizer model (HuggingFace hub identifier or local path).
+  # The pipeline loads this dynamically, so swapping tokenizers requires
+  # only a config change.
+  model_name_or_path: "inceptionai/jais-13b-chat"
+
+  # Maximum sequence length after tokenization
+  max_length: 512
+
+  # Padding strategy: "max_length"
+  padding: "max_length"
+
+  # Whether to truncate sequences exceeding max_length
+  truncation: true
+
+  # Whether to allow custom tokenizer code from the model repo.
+  # Required for models like jais-13b-chat that use non-standard architectures.
+  trust_remote_code: true
+
+  # Whether to add BOS/EOS special tokens
+  add_special_tokens: true
+
+# Binary shard output
+shard:
+  # Directory where processed shards are written
+  output_dir: "./output/shards"
+
+  # Target size per shard file in megabytes.
+  # Smaller shards = better parallelism but more file handles.
+  shard_size_mb: 256
+
+  # Maximum number of samples per shard file.
+  # Once this limit is reached, the current shard is finalized and a new one
+  # is opened automatically.  null = no sample-count limit (size-based only).
+  max_samples_per_shard: null
+
+  # Compression algorithm for shard data.
+  # null = uncompressed (fastest C++ reads, largest files)
+  # "lz4" = fast compression (good balance)
+  compression: null
+
+  # Byte alignment for memory-mapped access in C++.
+  # Must be a power of 2.  64 bytes aligns with typical cache lines.
+  alignment_bytes: 64
+
+# Pipeline-level parameters
+
+# Shuffling strategy for sample ordering in shards.
+#   "none"   -- no shuffling, samples are written in ingestion order
+#   "local"  -- in-shard shuffling (samples shuffled within each shard before writing)
+#   "global" -- cross-shard shuffling (entire dataset shuffled before sharding)
+shuffling: "none"
+
+# Number of parallel preprocessing workers (0 = single-threaded)
+num_workers: 4
+
+# Logging verbosity: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+log_level: "INFO"
+
+# Global random seed for reproducibility
+seed: 42
