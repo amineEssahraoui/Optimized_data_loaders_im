@@ -34,9 +34,9 @@ from preprocessing.schema import (
 )
 
 
-# ---------------------------------------------------------------------------
+
 # Helper: create a minimal valid PNG image as bytes
-# ---------------------------------------------------------------------------
+
 def _make_test_image(width: int = 64, height: int = 48) -> bytes:
     """Create a small RGB PNG image and return its bytes."""
     img = Image.new("RGB", (width, height), color=(128, 64, 32))
@@ -45,9 +45,9 @@ def _make_test_image(width: int = 64, height: int = 48) -> bytes:
     return buf.getvalue()
 
 
-# ===========================================================================
+
 # Schema tests
-# ===========================================================================
+
 class TestVQASampleValidation:
     """Verify VQASample.validate() catches all invariant violations."""
 
@@ -221,9 +221,9 @@ class TestVQASampleValidation:
         assert d["image_bytes_length"] == len(img_bytes)
 
 
-# ===========================================================================
+
 # JSON Schema tests
-# ===========================================================================
+
 class TestJSONSchema:
     """Verify the JSON Schema constant is structurally correct."""
 
@@ -245,9 +245,9 @@ class TestJSONSchema:
         assert dc_fields <= schema_props
 
 
-# ===========================================================================
+
 # Config loading tests
-# ===========================================================================
+
 class TestConfigLoading:
     """Verify the config system loads YAML correctly."""
 

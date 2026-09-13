@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug"/>
+		<BuildType Name="Release"/>
+		<BuildType Name="MinSizeRel"/>
+		<BuildType Name="RelWithDebInfo"/>
+		<Platform Name="x64"/>
+	</Configurations>
+	<Project Path="ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="260f44f1-bdfd-3f3f-a928-e124767d6c1f" DefaultStartup="true">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="vlm_loader.vcxproj"/>
+		<BuildDependency Project="bindings/vlm_loader_py.vcxproj"/>
+		<BuildDependency Project="vlm_lz4.vcxproj"/>
+	</Project>
+	<Project Path="INSTALL.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="e544526e-019a-3f9f-8638-0d2dccaff374">
+		<BuildDependency Project="ALL_BUILD.vcxproj"/>
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="ZERO_CHECK.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="efef352e-5f54-3385-bca1-1b677eeacb48"/>
+	<Project Path="vlm_loader.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="20df2a71-c126-300f-9a72-3c7ebf4d74a5">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="vlm_lz4.vcxproj"/>
+	</Project>
+	<Project Path="bindings/vlm_loader_py.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="361c9b03-0f6d-39d7-b406-f12d2b74f014">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+		<BuildDependency Project="vlm_loader.vcxproj"/>
+		<BuildDependency Project="vlm_lz4.vcxproj"/>
+	</Project>
+	<Project Path="vlm_lz4.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="a927b552-62d8-3558-b95a-03a325370b2a">
+		<BuildDependency Project="ZERO_CHECK.vcxproj"/>
+	</Project>
+</Solution>

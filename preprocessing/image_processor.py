@@ -226,6 +226,105 @@ def normalize_image(image_bytes: bytes, config: ImageConfig) -> np.ndarray:
     return arr
 
 
+def resize_preserve_aspect(
+    image_bytes: bytes,
+    config: ImageConfig,
+) -> tuple[np.ndarray, int, int, int, int]:
+    """Resize an image preserving aspect ratio, returning raw uint8 CHW.
+
+    The longest side is scaled to ``config.max_image_dim``.  No padding
+    or normalization is applied — those are deferred to the C++ loader
+    at batch collation time (Format v2 pipeline).
+
+    Parameters
+    ----------
+    image_bytes : bytes
+        Raw encoded image (PNG, JPEG, etc.).
+    config : ImageConfig
+        Image preprocessing configuration.  Uses ``max_image_dim``,
+        ``color_space``, and ``interpolation``.
+
+    Returns
+    -------
+    tuple[np.ndarray, int, int, int, int]
+        ``(image_uint8_chw, orig_h, orig_w, actual_h, actual_w)``
+        where ``image_uint8_chw`` is a contiguous ``uint8`` array of
+        shape ``(C, actual_h, actual_w)``.
+
+    Raises
+    ------
+    ValueError
+        If the image cannot be decoded or the color space is unsupported.
+    """
+    # Step 1: Decode
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+    except Exception as exc:
+        raise ValueError(f"Failed to decode image: {exc}") from exc
+
+    # Step 2: Color space conversion
+    target_cs = config.color_space.upper()
+    if target_cs == "RGB":
+        img = img.convert("RGB")
+    elif target_cs == "BGR":
+        img = img.convert("RGB")  # flip channels later in numpy
+    elif target_cs == "L":
+        img = img.convert("L")
+    else:
+        raise ValueError(f"Unsupported color space: {config.color_space}")
+
+    orig_w, orig_h = img.size
+
+    # Step 3: Resize — scale longest side to max_image_dim
+    max_dim = config.max_image_dim
+    scale = min(max_dim / orig_w, max_dim / orig_h)
+    if scale < 1.0:
+        new_w = max(1, int(orig_w * scale))
+        new_h = max(1, int(orig_h * scale))
+        resample = _get_interpolation(config.interpolation)
+        img = img.resize((new_w, new_h), resample=resample)
+    else:
+        new_w, new_h = orig_w, orig_h
+
+    # Step 4: Convert to uint8 numpy array
+    arr = np.array(img, dtype=np.uint8)
+
+    # Handle BGR channel flip
+    if target_cs == "BGR" and arr.ndim == 3:
+        arr = arr[:, :, ::-1]
+
+    # Transpose HWC → CHW (or add channel dim for grayscale)
+    if arr.ndim == 2:
+        arr = arr[np.newaxis, :, :]  # (1, H, W)
+    else:
+        arr = arr.transpose(2, 0, 1)  # (C, H, W)
+
+    return np.ascontiguousarray(arr), orig_h, orig_w, new_h, new_w
+
+
+def prepare_image_uint8(image_bytes: bytes, config: ImageConfig) -> np.ndarray:
+    """Prepare an image as a uint8 CHW array for Format v2 shard storage.
+
+    This is the v2 equivalent of :func:`normalize_image`.  Normalization
+    is *not* applied here — it is deferred to the C++ loader at batch
+    collation time, where SIMD vectorisation can be exploited.
+
+    Parameters
+    ----------
+    image_bytes : bytes
+        Raw encoded image (PNG, JPEG, etc.).
+    config : ImageConfig
+        Image preprocessing configuration.
+
+    Returns
+    -------
+    np.ndarray
+        Contiguous ``uint8`` array of shape ``(C, H, W)``.
+    """
+    arr, _, _, _, _ = resize_preserve_aspect(image_bytes, config)
+    return arr
+
+
 def denormalize_image(tensor: np.ndarray, config: ImageConfig) -> np.ndarray:
     """Reverse the normalization to recover displayable pixel values.
 

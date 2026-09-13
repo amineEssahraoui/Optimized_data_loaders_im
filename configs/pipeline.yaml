@@ -59,6 +59,20 @@ image:
   # Pixel value used for padding (0-255)
   pad_value: 0
 
+  # Maximum image dimension for aspect-ratio-preserving resize (v2 format).
+  # The longest side is scaled to this value; the shorter side preserves
+  # the original aspect ratio.
+  max_image_dim: 384
+
+  # Storage data type in binary shards:
+  #   "float32" -- v1 format, normalized at preprocessing time
+  #   "uint8"   -- v2 format, raw pixels, 4x I/O reduction,
+  #                normalization deferred to C++ loader
+  storage_dtype: "uint8"
+
+  # Enable dynamic padding (variable-size images, padded at batch time)
+  dynamic_padding: true
+
 # Text tokenization
 tokenizer:
   # Pretrained tokenizer model (HuggingFace hub identifier or local path).
@@ -104,6 +118,11 @@ shard:
   # Byte alignment for memory-mapped access in C++.
   # Must be a power of 2.  64 bytes aligns with typical cache lines.
   alignment_bytes: 64
+
+  # Binary shard format version:
+  #   1 = legacy float32 with fixed dimensions
+  #   2 = uint8 storage with per-sample dimensions (recommended)
+  format_version: 2
 
 # Pipeline-level parameters
 

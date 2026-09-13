@@ -25,9 +25,8 @@ from typing import Any
 from PIL import Image
 
 
-# ---------------------------------------------------------------------------
 # JSON Schema representation (for documentation and external validation)
-# ---------------------------------------------------------------------------
+
 VQA_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "VQASample",
@@ -88,16 +87,14 @@ VQA_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Schema validation errors
-# ---------------------------------------------------------------------------
+
 class SchemaValidationError(ValueError):
     """Raised when a VQASample fails validation checks."""
 
 
-# ---------------------------------------------------------------------------
 # Canonical VQA sample dataclass
-# ---------------------------------------------------------------------------
+
 @dataclasses.dataclass
 class VQASample:
     """A single Visual Question Answering sample in canonical form.

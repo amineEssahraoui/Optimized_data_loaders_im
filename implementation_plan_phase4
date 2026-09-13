@@ -1,0 +1,115 @@
+# Phase 4: Python Preprocessing & Distributed Scalability
+
+Complete the final phase: fix preprocessing bottlenecks via multiprocessing, add distributed shard assignment, and deliver exhaustive benchmarking with visual plots.
+
+## Proposed Changes
+
+### 1. Streaming Multiprocessing Pipeline
+
+#### [MODIFY] [pipeline.py](file:///c:/Users/PC/Desktop/vlm-image-loader/preprocessing/pipeline.py)
+
+The current pipeline has two critical bottlenecks:
+- **Sequential processing**: `_run_local_shuffle_pipeline` and the main path both iterate samples one-at-a-time on a single thread
+- **Full-dataset buffering**: `_run_local_shuffle_pipeline` collects ALL preprocessed samples in `preprocessed: list[dict]` before writing — this blows up RAM on large datasets
+
+**Changes:**
+- Add `_init_worker_tokenizer()` / `_process_sample_in_worker()` as module-level functions for `ProcessPoolExecutor` (tokenizer must be initialized per-worker since HuggingFace tokenizers aren't fork-safe)
+- New `_run_streaming_pipeline()` that accumulates samples shard-by-shard up to `max_samples_per_shard`, processes the chunk in parallel via `ProcessPoolExecutor`, writes the shard, and flushes memory before the next chunk
+- `run_pipeline()` dispatches to the streaming path when `num_workers >= 1`, falls back to the existing sequential path for `num_workers == 0`
+- The streaming path respects `config.shuffling` (none / global / local) — global shuffle shuffles the full sample list before chunking; local shuffle shuffles each chunk before writing
+
+---
+
+### 2. Shard Manifest for Distributed Training
+
+#### [NEW] [shard_manifest.py](file:///c:/Users/PC/Desktop/vlm-image-loader/preprocessing/shard_manifest.py)
+
+A JSON-based manifest that catalogs all shards produced by a preprocessing run:
+
+```json
+{
+  "version": 1,
+  "created_at": "2026-09-12T17:30:00Z",
+  "total_samples": 1000,
+  "total_shards": 4,
+  "shards": [
+    {
+      "path": "shard_0000.bin",
+      "sample_count": 250,
+      "size_bytes": 67108864,
+      "checksum_crc32": "a1b2c3d4"
+    },
+    ...
+  ]
+}
+```
+
+Key functions:
+- `ShardManifest` dataclass with `save()` / `load()` for JSON serialization
+- `build_manifest(output_dir)` — scans a shard directory and builds the manifest by parsing each shard's header
+- `assign_shards(manifest, rank, world_size)` — deterministic round-robin shard assignment for DDP. Returns the list of `ShardInfo` entries that this rank should load. Deterministic: given the same manifest, rank, and world_size, always produces the same assignment.
+
+---
+
+### 3. C++ Distributed Headers
+
+#### No changes needed to [distributed.h](file:///c:/Users/PC/Desktop/vlm-image-loader/loader/include/distributed.h) or [distributed.cpp](file:///c:/Users/PC/Desktop/vlm-image-loader/loader/src/distributed.cpp)
+
+These are already complete from Phase 1 — they implement `get_worker_indices()` and `verify_partition()` with both `contiguous` and `interleaved` strategies. No modifications required.
+
+---
+
+### 4. Exhaustive Benchmarking
+
+#### [NEW] [benchmark_preprocessing.py](file:///c:/Users/PC/Desktop/vlm-image-loader/benchmarks/benchmark_preprocessing.py)
+
+A self-contained benchmark script that:
+1. Generates synthetic VQASample data (no external dataset dependency)
+2. Benchmarks the **old sequential** path vs. the **new streaming multiprocessing** path
+3. Scales across 1, 2, 4, 8 workers to measure throughput
+4. Tracks peak RSS memory using `psutil` (or `resource` on Linux) per run
+5. Generates stunning `matplotlib` plots:
+   - `throughput_scaling.png` — bar chart + line overlay showing samples/s across worker counts
+   - `memory_footprint.png` — grouped bar chart of peak RAM per configuration
+6. Prints a detailed ASCII summary table to console
+
+**Design details:**
+- Uses `PIL.Image` to generate random synthetic JPEG images (avoids any external data dependency)
+- Uses a lightweight tokenizer (`bert-base-uncased`) for the benchmark to keep setup fast
+- Each benchmark run is timed with `time.perf_counter` for high-resolution measurements
+- Memory is tracked via `tracemalloc` (cross-platform, works on Windows)
+
+---
+
+### 5. Distributed & Streaming Tests
+
+#### [NEW] [test_distributed.py](file:///c:/Users/PC/Desktop/vlm-image-loader/tests/test_distributed.py)
+
+Pytest-based unit tests covering:
+
+**Shard Manifest tests:**
+- `test_manifest_round_trip` — build → save → load → compare
+- `test_assign_shards_deterministic` — same inputs always produce same output
+- `test_assign_shards_full_coverage` — union of all ranks' shards equals the full set
+- `test_assign_shards_no_overlap` — no shard assigned to two ranks
+- `test_assign_shards_edge_cases` — world_size > num_shards, world_size == 1, etc.
+
+**Streaming pipeline tests:**
+- `test_streaming_pipeline_produces_shards` — verify shards are written correctly
+- `test_streaming_pipeline_memory_bounded` — verify that peak memory stays bounded (not O(N) on dataset size)
+- `test_multiprocessing_correctness` — verify that multiprocessing produces identical output to single-threaded
+
+## Verification Plan
+
+### Automated Tests
+```bash
+# Run the new distributed/streaming tests
+python -m pytest tests/test_distributed.py -v
+
+# Run the benchmark (synthetic mode, fast)
+python benchmarks/benchmark_preprocessing.py --num-samples 100
+```
+
+### Manual Verification
+- Inspect generated PNG plots for visual correctness
+- Verify the console summary table is legible and complete

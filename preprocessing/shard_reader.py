@@ -23,8 +23,13 @@ from typing import Any
 
 import numpy as np
 
+# We import the LZ4 flag to detect compressed shards
 from preprocessing.shard_writer import (
+    FLAG_PER_SAMPLE_DIMS,
+    FLAG_UINT8_STORAGE,
+    FLAG_LZ4_COMPRESSED,
     FORMAT_VERSION,
+    FORMAT_VERSION_V2,
     HEADER_SIZE,
     MAGIC_END,
     MAGIC_START,
@@ -44,6 +49,7 @@ class ShardHeader:
     image_height: int
     image_width: int
     token_length: int
+    flags: int = 0  # v2 only; 0 for v1
 
 
 @dataclasses.dataclass
@@ -55,6 +61,11 @@ class ShardSample:
     answer_ids: np.ndarray        # int32, shape (T,)
     answer_mask: np.ndarray       # int32, shape (T,)
     metadata: dict[str, Any]
+    # V2 per-sample dimensions (None for v1)
+    orig_height: int | None = None
+    orig_width: int | None = None
+    actual_height: int | None = None
+    actual_width: int | None = None
 
 
 class ShardReader:
@@ -102,7 +113,7 @@ class ShardReader:
         )
 
     def _read_header(self) -> ShardHeader:
-        """Parse the 64-byte fixed header."""
+        """Parse the 64-byte fixed header (v1 or v2)."""
         self._file.seek(0)
         raw = self._file.read(HEADER_SIZE)
         if len(raw) < HEADER_SIZE:
@@ -110,39 +121,73 @@ class ShardReader:
                 f"Shard file too small for header: {len(raw)} < {HEADER_SIZE}"
             )
 
-        # Unpack matches the write order in ShardWriter._write_header
-        (
-            magic,
-            version,
-            sample_count,
-            offset_table_pos,
-            channels,
-            height,
-            width,
-            token_length,
-            _reserved_rest,
-        ) = struct.unpack("<8sIIQIIII24s", raw)
-
+        # First, peek at the version to decide the parse format
+        magic = raw[:8]
         if magic != MAGIC_START:
             raise ValueError(
                 f"Invalid magic: expected {MAGIC_START!r}, got {magic!r}"
             )
 
-        if version != FORMAT_VERSION:
-            raise ValueError(
-                f"Unsupported version: expected {FORMAT_VERSION}, got {version}"
+        version = struct.unpack_from("<I", raw, 8)[0]
+
+        if version == FORMAT_VERSION:
+            # V1 header: 24 bytes reserved at end
+            (
+                magic,
+                version,
+                sample_count,
+                offset_table_pos,
+                channels,
+                height,
+                width,
+                token_length,
+                _reserved,
+            ) = struct.unpack("<8sIIQIIII24s", raw)
+
+            return ShardHeader(
+                magic=magic,
+                version=version,
+                sample_count=sample_count,
+                offset_table_pos=offset_table_pos,
+                image_channels=channels,
+                image_height=height,
+                image_width=width,
+                token_length=token_length,
+                flags=0,
             )
 
-        return ShardHeader(
-            magic=magic,
-            version=version,
-            sample_count=sample_count,
-            offset_table_pos=offset_table_pos,
-            image_channels=channels,
-            image_height=height,
-            image_width=width,
-            token_length=token_length,
-        )
+        elif version == FORMAT_VERSION_V2:
+            # V2 header: 4-byte flags + 20 bytes reserved
+            (
+                magic,
+                version,
+                sample_count,
+                offset_table_pos,
+                channels,
+                height,
+                width,
+                token_length,
+                flags,
+                _reserved,
+            ) = struct.unpack("<8sIIQIIIII20s", raw)
+
+            return ShardHeader(
+                magic=magic,
+                version=version,
+                sample_count=sample_count,
+                offset_table_pos=offset_table_pos,
+                image_channels=channels,
+                image_height=height,
+                image_width=width,
+                token_length=token_length,
+                flags=flags,
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported version: expected {FORMAT_VERSION} or "
+                f"{FORMAT_VERSION_V2}, got {version}"
+            )
 
     def _read_offset_table(self) -> list[tuple[int, int]]:
         """Parse the offset table at the position specified in the header."""
@@ -158,7 +203,6 @@ class ShardReader:
 
     def _verify_footer(self) -> None:
         """Verify the CRC32 checksum and end magic in the footer."""
-        # Footer position: after the offset table
         footer_pos = (
             self._header.offset_table_pos
             + self._header.sample_count * 16
@@ -220,34 +264,77 @@ class ShardReader:
                 f"Sample index {index} out of range [0, {self._header.sample_count})"
             )
 
-        offset, _length = self._offsets[index]
+        offset, length = self._offsets[index]
         self._file.seek(offset)
+        
+        # 1. Read the entire sample record into memory (Buffer-based parsing)
+        raw_data = self._file.read(length)
 
         h = self._header
+        is_v2 = h.version >= FORMAT_VERSION_V2
+        has_per_sample_dims = is_v2 and (h.flags & FLAG_PER_SAMPLE_DIMS)
+        is_uint8 = is_v2 and (h.flags & FLAG_UINT8_STORAGE)
+        is_lz4 = is_v2 and (h.flags & FLAG_LZ4_COMPRESSED)
 
-        # Read image tensor
-        img_size = h.image_channels * h.image_height * h.image_width * 4
-        img_data = self._file.read(img_size)
-        image_tensor = np.frombuffer(img_data, dtype=np.float32).reshape(
-            h.image_channels, h.image_height, h.image_width
-        ).copy()
+        # 2. Decompress if necessary
+        if is_lz4:
+            import lz4.block
+            # First 4 bytes hold the uncompressed size
+            uncompressed_size = struct.unpack_from("<I", raw_data)[0]
+            # Decompress the rest of the buffer
+            buffer = lz4.block.decompress(raw_data[4:], uncompressed_size=uncompressed_size)
+        else:
+            buffer = raw_data
 
-        # Read question token IDs
-        token_bytes = h.token_length * 4
-        q_ids = np.frombuffer(self._file.read(token_bytes), dtype=np.int32).copy()
+        buf_offset = 0
 
-        # Read question attention mask
-        q_mask = np.frombuffer(self._file.read(token_bytes), dtype=np.int32).copy()
+        # 3. Parse fields sequentially from the in-memory buffer
+        # --- Per-sample dimension prefix (v2 only) ---
+        orig_height = orig_width = actual_height = actual_width = None
+        if has_per_sample_dims:
+            orig_height, orig_width, actual_height, actual_width = struct.unpack_from("<HHHH", buffer, buf_offset)
+            buf_offset += 8
+            img_h, img_w = actual_height, actual_width
+        else:
+            img_h, img_w = h.image_height, h.image_width
 
-        # Read answer token IDs
-        a_ids = np.frombuffer(self._file.read(token_bytes), dtype=np.int32).copy()
+        # --- Read image tensor ---
+        if is_uint8:
+            # V2: uint8 CHW, variable size
+            img_size = h.image_channels * img_h * img_w
+            image_tensor = np.frombuffer(buffer, dtype=np.uint8, count=img_size, offset=buf_offset).reshape(
+                h.image_channels, img_h, img_w
+            ).copy().astype(np.float32) / 255.0
+            buf_offset += img_size
+        else:
+            # V1: float32 CHW, fixed size
+            img_size = h.image_channels * img_h * img_w * 4
+            image_tensor = np.frombuffer(buffer, dtype=np.float32, count=img_size // 4, offset=buf_offset).reshape(
+                h.image_channels, img_h, img_w
+            ).copy()
+            buf_offset += img_size
 
-        # Read answer attention mask
-        a_mask = np.frombuffer(self._file.read(token_bytes), dtype=np.int32).copy()
+        # --- Read token arrays ---
+        token_count = h.token_length
+        token_bytes = token_count * 4
 
-        # Read metadata
-        meta_len = struct.unpack("<I", self._file.read(4))[0]
-        meta_json = self._file.read(meta_len).decode("utf-8")
+        q_ids = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
+        buf_offset += token_bytes
+        
+        q_mask = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
+        buf_offset += token_bytes
+        
+        a_ids = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
+        buf_offset += token_bytes
+        
+        a_mask = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
+        buf_offset += token_bytes
+
+        # --- Read metadata ---
+        meta_len = struct.unpack_from("<I", buffer, buf_offset)[0]
+        buf_offset += 4
+        
+        meta_json = buffer[buf_offset : buf_offset + meta_len].decode("utf-8")
         metadata = json.loads(meta_json)
 
         return ShardSample(
@@ -257,6 +344,10 @@ class ShardReader:
             answer_ids=a_ids,
             answer_mask=a_mask,
             metadata=metadata,
+            orig_height=orig_height,
+            orig_width=orig_width,
+            actual_height=actual_height,
+            actual_width=actual_width,
         )
 
     def read_all(self) -> list[ShardSample]:

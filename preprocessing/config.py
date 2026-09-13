@@ -151,6 +151,16 @@ class ImageConfig:
         Resize interpolation method ("bicubic", "bilinear", "lanczos", "nearest").
     pad_value : int
         Pixel value used for padding (0-255).
+    max_image_dim : int
+        Maximum image dimension for aspect-ratio-preserving resize (v2 format).
+        The longest side is scaled to this value; the shorter side is computed
+        to preserve the original aspect ratio.
+    storage_dtype : str
+        Storage data type in binary shards: ``"float32"`` (v1, normalized) or
+        ``"uint8"`` (v2, raw pixels — normalization deferred to C++ loader).
+    dynamic_padding : bool
+        If True, store per-sample dimensions and pad dynamically at batch
+        collation time.  Eliminates static padding waste.
     """
 
     target_size: tuple[int, int] = (384, 384)
@@ -160,6 +170,9 @@ class ImageConfig:
     normalization_std: tuple[float, ...] = (0.229, 0.224, 0.225)
     interpolation: str = "bicubic"
     pad_value: int = 0
+    max_image_dim: int = 384
+    storage_dtype: str = "float32"
+    dynamic_padding: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImageConfig:
@@ -229,6 +242,10 @@ class ShardConfig:
         Compression algorithm (None for uncompressed, "lz4" for LZ4).
     alignment_bytes : int
         Byte alignment for memory-mapped access in C++.
+    format_version : int
+        Binary shard format version.  ``1`` = legacy float32 with fixed
+        dimensions.  ``2`` = uint8 storage with per-sample dimensions and
+        flags field for compression and dynamic padding.
     """
 
     output_dir: str = "./output/shards"
@@ -236,6 +253,7 @@ class ShardConfig:
     max_samples_per_shard: int | None = None
     compression: str | None = None
     alignment_bytes: int = 64
+    format_version: int = 2
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ShardConfig:

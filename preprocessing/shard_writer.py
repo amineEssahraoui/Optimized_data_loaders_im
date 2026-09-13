@@ -64,7 +64,14 @@ logger = logging.getLogger(__name__)
 MAGIC_START = b"VLMSHARD"
 MAGIC_END = b"SHARDEND"
 FORMAT_VERSION = 1
-HEADER_SIZE = 64  # Fixed header size in bytes
+FORMAT_VERSION_V2 = 2
+HEADER_SIZE = 64  # Fixed header size in bytes (same for v1 and v2)
+
+# V2 header flags (stored in bytes 40-43 of header, was reserved in v1)
+FLAG_UINT8_STORAGE = 0x01      # bit 0: image data is uint8 (not float32)
+FLAG_PER_SAMPLE_DIMS = 0x02    # bit 1: each sample has a dimension prefix
+FLAG_LZ4_COMPRESSED = 0x04     # bit 2: sample data is LZ4-compressed
+FLAG_ZSTD_COMPRESSED = 0x08    # bit 3: sample data is zstd-compressed
 
 
 class ShardWriter:
@@ -99,6 +106,11 @@ class ShardWriter:
         self._image_config = image_config
         self._tokenizer_config = tokenizer_config
         self._alignment = shard_config.alignment_bytes
+        self._format_version = shard_config.format_version
+        self._use_lz4 = (
+            shard_config.compression == "lz4"
+            and shard_config.format_version >= 2
+        )
 
         # Per-shard state, initialized in open()
         self._file = None
@@ -129,29 +141,57 @@ class ShardWriter:
     def _write_header(self) -> None:
         """Write the 64-byte fixed header.
 
-        The offset_table_pos field is written as 0 initially and
-        updated when close() is called, once the actual position
-        is known.
+        The offset_table_pos and sample_count fields are written as 0
+        initially and updated when close() is called.
+
+        For v2, the 24-byte reserved block is split into a 4-byte flags
+        field followed by 20 bytes of remaining reserved space.  The
+        image_height / image_width fields store the maximum image
+        dimension (resize cap), not fixed per-sample sizes.
         """
-        target_h, target_w = self._image_config.target_size
-        # Determine number of channels from color space
         color_space = self._image_config.color_space.upper()
         num_channels = 1 if color_space == "L" else 3
 
-        header = struct.pack(
-            "<8sIIQIIII24s",
-            MAGIC_START,               # 8 bytes: magic
-            FORMAT_VERSION,            # 4 bytes: version
-            0,                         # 4 bytes: sample_count (filled at close)
-            0,                         # 8 bytes: offset_table_pos (filled at close)
-            num_channels,              # 4 bytes: image_channels
-            target_h,                  # 4 bytes: image_height
-            target_w,                  # 4 bytes: image_width
-            self._tokenizer_config.max_length,  # 4 bytes: token_length
-            b"\x00" * 24,              # 24 bytes: remaining reserved
-        )
+        if self._format_version >= 2:
+            # --- V2 header ---
+            max_dim = self._image_config.max_image_dim
+            flags = 0
+            if self._image_config.storage_dtype == "uint8":
+                flags |= FLAG_UINT8_STORAGE
+            if self._image_config.dynamic_padding:
+                flags |= FLAG_PER_SAMPLE_DIMS
+            if self._use_lz4:
+                flags |= FLAG_LZ4_COMPRESSED
 
-        # The struct above packs to exactly 64 bytes
+            header = struct.pack(
+                "<8sIIQIIIII20s",
+                MAGIC_START,                        # 8 bytes: magic
+                FORMAT_VERSION_V2,                  # 4 bytes: version = 2
+                0,                                  # 4 bytes: sample_count
+                0,                                  # 8 bytes: offset_table_pos
+                num_channels,                       # 4 bytes: image_channels
+                max_dim,                            # 4 bytes: image_height (= max dim)
+                max_dim,                            # 4 bytes: image_width  (= max dim)
+                self._tokenizer_config.max_length,  # 4 bytes: token_length
+                flags,                              # 4 bytes: flags (was reserved)
+                b"\x00" * 20,                       # 20 bytes: remaining reserved
+            )
+        else:
+            # --- V1 header (legacy) ---
+            target_h, target_w = self._image_config.target_size
+            header = struct.pack(
+                "<8sIIQIIII24s",
+                MAGIC_START,               # 8 bytes: magic
+                FORMAT_VERSION,            # 4 bytes: version
+                0,                         # 4 bytes: sample_count (filled at close)
+                0,                         # 8 bytes: offset_table_pos (filled at close)
+                num_channels,              # 4 bytes: image_channels
+                target_h,                  # 4 bytes: image_height
+                target_w,                  # 4 bytes: image_width
+                self._tokenizer_config.max_length,  # 4 bytes: token_length
+                b"\x00" * 24,              # 24 bytes: remaining reserved
+            )
+
         assert len(header) == HEADER_SIZE, (
             f"Header size mismatch: expected {HEADER_SIZE}, got {len(header)}"
         )
@@ -175,23 +215,31 @@ class ShardWriter:
         answer_ids: np.ndarray,
         answer_mask: np.ndarray,
         metadata: dict[str, Any] | None = None,
+        *,
+        orig_height: int | None = None,
+        orig_width: int | None = None,
     ) -> None:
         """Write a single preprocessed sample to the shard.
 
         Parameters
         ----------
         image_tensor : np.ndarray
-            Float32 array of shape (C, H, W).
+            Image array.  For v1: float32 ``(C, H, W)``.  For v2: uint8
+            ``(C, actual_H, actual_W)`` with variable dimensions.
         question_ids : np.ndarray
-            Int32 array of shape (seq_len,).
+            Int32 array of shape ``(seq_len,)``.
         question_mask : np.ndarray
-            Int32 array of shape (seq_len,).
+            Int32 array of shape ``(seq_len,)``.
         answer_ids : np.ndarray
-            Int32 array of shape (seq_len,).
+            Int32 array of shape ``(seq_len,)``.
         answer_mask : np.ndarray
-            Int32 array of shape (seq_len,).
+            Int32 array of shape ``(seq_len,)``.
         metadata : dict | None
             Optional metadata dictionary, serialized as JSON.
+        orig_height : int | None
+            Original image height before resize (v2 only).
+        orig_width : int | None
+            Original image width before resize (v2 only).
         """
         if self._file is None:
             raise RuntimeError("ShardWriter is not open. Call open() first.")
@@ -201,40 +249,93 @@ class ShardWriter:
 
         sample_start = self._bytes_written
 
-        # Write image tensor (float32, CHW layout, contiguous)
-        img_data = np.ascontiguousarray(image_tensor, dtype=np.float32).tobytes()
-        self._file.write(img_data)
-        self._bytes_written += len(img_data)
+        # Serialize all sample fields into a contiguous byte buffer
+        raw = self._serialize_sample_fields(
+            image_tensor, question_ids, question_mask,
+            answer_ids, answer_mask, metadata,
+            orig_height=orig_height, orig_width=orig_width,
+        )
 
-        # Write question token IDs and attention mask
-        q_ids_data = np.ascontiguousarray(question_ids, dtype=np.int32).tobytes()
-        self._file.write(q_ids_data)
-        self._bytes_written += len(q_ids_data)
+        if self._use_lz4:
+            # ── LZ4 compression path ─────────────────────────────
+            import lz4.block
 
-        q_mask_data = np.ascontiguousarray(question_mask, dtype=np.int32).tobytes()
-        self._file.write(q_mask_data)
-        self._bytes_written += len(q_mask_data)
+            compressed = lz4.block.compress(raw, store_size=False)
 
-        # Write answer token IDs and attention mask
-        a_ids_data = np.ascontiguousarray(answer_ids, dtype=np.int32).tobytes()
-        self._file.write(a_ids_data)
-        self._bytes_written += len(a_ids_data)
-
-        a_mask_data = np.ascontiguousarray(answer_mask, dtype=np.int32).tobytes()
-        self._file.write(a_mask_data)
-        self._bytes_written += len(a_mask_data)
-
-        # Write metadata as JSON
-        meta_json = json.dumps(metadata or {}, ensure_ascii=False).encode("utf-8")
-        # Write the length prefix (4 bytes, uint32)
-        self._file.write(struct.pack("<I", len(meta_json)))
-        self._bytes_written += 4
-        # Write the JSON bytes
-        self._file.write(meta_json)
-        self._bytes_written += len(meta_json)
+            # Write: [uint32 uncompressed_size] [compressed_data]
+            self._file.write(struct.pack("<I", len(raw)))
+            self._file.write(compressed)
+            self._bytes_written += 4 + len(compressed)
+        else:
+            # ── Uncompressed path ────────────────────────────────
+            self._file.write(raw)
+            self._bytes_written += len(raw)
 
         sample_length = self._bytes_written - sample_start
         self._sample_offsets.append((sample_start, sample_length))
+
+    def _serialize_sample_fields(
+        self,
+        image_tensor: np.ndarray,
+        question_ids: np.ndarray,
+        question_mask: np.ndarray,
+        answer_ids: np.ndarray,
+        answer_mask: np.ndarray,
+        metadata: dict[str, Any] | None,
+        *,
+        orig_height: int | None = None,
+        orig_width: int | None = None,
+    ) -> bytes:
+        """Serialize all sample fields into a contiguous byte buffer.
+
+        This buffer is either written directly or LZ4-compressed before
+        writing, depending on the shard config.  By building the buffer
+        in one pass we avoid multiple small I/O writes and enable
+        compression of the complete sample record.
+        """
+        parts: list[bytes] = []
+
+        if self._format_version >= 2:
+            # Per-sample dimension prefix: 4 × uint16 = 8 bytes
+            actual_h, actual_w = image_tensor.shape[1], image_tensor.shape[2]
+            oh = orig_height if orig_height is not None else actual_h
+            ow = orig_width if orig_width is not None else actual_w
+            parts.append(struct.pack(
+                "<HHHH",
+                min(oh, 65535), min(ow, 65535), actual_h, actual_w,
+            ))
+            # Image data: uint8 CHW, variable size
+            parts.append(
+                np.ascontiguousarray(image_tensor, dtype=np.uint8).tobytes()
+            )
+        else:
+            # Image data: float32 CHW, fixed size
+            parts.append(
+                np.ascontiguousarray(image_tensor, dtype=np.float32).tobytes()
+            )
+
+        # Token arrays (4 × T × int32)
+        parts.append(
+            np.ascontiguousarray(question_ids, dtype=np.int32).tobytes()
+        )
+        parts.append(
+            np.ascontiguousarray(question_mask, dtype=np.int32).tobytes()
+        )
+        parts.append(
+            np.ascontiguousarray(answer_ids, dtype=np.int32).tobytes()
+        )
+        parts.append(
+            np.ascontiguousarray(answer_mask, dtype=np.int32).tobytes()
+        )
+
+        # Metadata: uint32 length prefix + UTF-8 JSON
+        meta_json = json.dumps(
+            metadata or {}, ensure_ascii=False,
+        ).encode("utf-8")
+        parts.append(struct.pack("<I", len(meta_json)))
+        parts.append(meta_json)
+
+        return b"".join(parts)
 
     def close(self) -> None:
         """Finalize the shard: write offset table, update header, then footer."""
