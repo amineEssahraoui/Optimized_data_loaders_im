@@ -307,53 +307,53 @@ def _bench_shard_reader(
     num_batches: int = 30,
     warmup: int = 3,
 ) -> dict[str, Any]:
-    """Benchmark ShardReader (Python proxy for C++ AsyncShardLoader)."""
-    from preprocessing.shard_reader import ShardReader  # noqa: PLC0415
+    """Benchmark C++ AsyncShardLoader directly."""
+    try:
+        import vlm_loader_py
+    except ImportError:
+        return {
+            "label": "AsyncShardLoader\n(C++ extension not built)",
+            "batches_per_sec": 0.0,
+            "samples_per_sec": 0.0,
+            "elapsed": 0.0,
+        }
 
-    shard_paths = sorted(shard_dir.glob("shard_*.bin"))
+    shard_paths = [str(p) for p in sorted(shard_dir.glob("shard_*.bin"))]
     if not shard_paths:
-        return {"label": "ShardReader", "batches_per_sec": 0.0, "samples_per_sec": 0.0}
+        return {"label": "AsyncShardLoader", "batches_per_sec": 0.0, "samples_per_sec": 0.0, "elapsed": 0.0}
 
-    readers = [ShardReader(str(p)) for p in shard_paths]
-    sample_refs: list[tuple[int, int]] = []
-    for ri, reader in enumerate(readers):
-        for si in range(reader.sample_count):
-            sample_refs.append((ri, si))
+    config = vlm_loader_py.AsyncLoaderConfig()
+    config.shard_paths = shard_paths
+    config.batch_size = batch_size
+    config.prefetch_depth = 2
+    config.num_workers = min(4, os.cpu_count() or 4)
+    config.seed = 42
+    config.shuffle_buffer_size = 0  # No shuffle for benchmarking raw throughput
 
-    if not sample_refs:
-        for r in readers:
-            r.close()
-        return {"label": "ShardReader", "batches_per_sec": 0.0, "samples_per_sec": 0.0}
-
-    total = len(sample_refs)
-    needed = (warmup + num_batches) * batch_size
-    indices = list(range(total))
-    if needed > total:
-        indices = (indices * ((needed // total) + 2))[:needed]
+    loader = vlm_loader_py.AsyncShardLoader(config)
 
     # Warmup
-    for b in range(warmup):
-        for idx in indices[b * batch_size : (b + 1) * batch_size]:
-            ri, si = sample_refs[idx % total]
-            _ = readers[ri].read_sample(si)
+    for _ in range(warmup):
+        try:
+            _ = loader.next()
+        except StopIteration:
+            loader.reset()
+            _ = loader.next()
 
     # Timed
-    offset = warmup * batch_size
     t0 = time.perf_counter()
-    for b in range(num_batches):
-        batch_slice = indices[offset + b * batch_size : offset + (b + 1) * batch_size]
-        for idx in batch_slice:
-            ri, si = sample_refs[idx % total]
-            _ = readers[ri].read_sample(si)
+    for _ in range(num_batches):
+        try:
+            _ = loader.next()
+        except StopIteration:
+            loader.reset()
+            _ = loader.next()
     elapsed = time.perf_counter() - t0
-
-    for r in readers:
-        r.close()
 
     batches_ps = num_batches / elapsed if elapsed > 0 else 0.0
     samples_ps = (num_batches * batch_size) / elapsed if elapsed > 0 else 0.0
     return {
-        "label": "ShardReader\n(C++ AsyncShardLoader proxy)",
+        "label": "C++ AsyncShardLoader\n(vlm_loader_py)",
         "batches_per_sec": round(batches_ps, 2),
         "samples_per_sec": round(samples_ps, 2),
         "elapsed": round(elapsed, 3),

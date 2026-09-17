@@ -369,9 +369,19 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         "Return self as the iterator.")
 
         .def("__next__", [](vlm::AsyncShardLoader& self) -> vlm::Batch {
-            if (!self.has_next())
+            bool has_nxt;
+            {
+                py::gil_scoped_release release;
+                has_nxt = self.has_next();
+            }
+            if (!has_nxt)
                 throw py::stop_iteration();
-            return self.next();
+            vlm::Batch batch;
+            {
+                py::gil_scoped_release release;
+                batch = self.next();
+            }
+            return batch;
         },
         R"doc(
         Get the next prefetched batch.
@@ -384,13 +394,35 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         )doc")
 
         // Explicit next/has_next for non-iterator usage
-        .def("next", &vlm::AsyncShardLoader::next,
-             "Get the next batch (blocking if prefetch queue is empty).")
-        .def("has_next", &vlm::AsyncShardLoader::has_next,
-             "Check if more batches remain in the current epoch.")
+        .def("next", [](vlm::AsyncShardLoader& self) -> vlm::Batch {
+            bool has_nxt;
+            {
+                py::gil_scoped_release release;
+                has_nxt = self.has_next();
+            }
+            if (!has_nxt)
+                throw py::stop_iteration();
+            vlm::Batch batch;
+            {
+                py::gil_scoped_release release;
+                batch = self.next();
+            }
+            return batch;
+        }, "Get the next batch (blocking if prefetch queue is empty).")
+        .def("has_next", [](vlm::AsyncShardLoader& self) -> bool {
+            bool result;
+            {
+                py::gil_scoped_release release;
+                result = self.has_next();
+            }
+            return result;
+        }, "Check if more batches remain in the current epoch.")
 
         // Epoch control
-        .def("reset", &vlm::AsyncShardLoader::reset,
+        .def("reset", [](vlm::AsyncShardLoader& self) {
+            py::gil_scoped_release release;
+            self.reset();
+        },
              R"doc(
              Reset for a new epoch.
 
@@ -414,9 +446,18 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         // ── to_torch(): batch → dict of torch tensors ──────────────
         .def("to_torch", [](vlm::AsyncShardLoader& self,
                             const std::string& device) -> py::dict {
-            if (!self.has_next())
+            bool has_nxt;
+            {
+                py::gil_scoped_release release;
+                has_nxt = self.has_next();
+            }
+            if (!has_nxt)
                 throw py::stop_iteration();
-            vlm::Batch batch = self.next();
+            vlm::Batch batch;
+            {
+                py::gil_scoped_release release;
+                batch = self.next();
+            }
             return batch_to_torch(batch, device);
         }, py::arg("device") = "cpu",
         R"doc(
@@ -441,6 +482,112 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         Raises:
             StopIteration: When all batches in the epoch are exhausted.
         )doc")
+
+        // ── get_batch_pinned(): pinned memory numpy arrays ─────────
+        .def("get_batch_pinned", [](vlm::AsyncShardLoader& self) -> py::dict {
+            bool has_nxt;
+            {
+                py::gil_scoped_release release;
+                has_nxt = self.has_next();
+            }
+            if (!has_nxt)
+                throw py::stop_iteration();
+            vlm::Batch batch;
+            {
+                py::gil_scoped_release release;
+                batch = self.next();
+            }
+            
+            py::dict d;
+            
+            auto make_pinned_float = [](const std::vector<float>& vec, const std::vector<ssize_t>& shape) {
+                size_t bytes = vec.size() * sizeof(float);
+                auto* pb = new vlm::gpu::PinnedBuffer(bytes);
+                std::memcpy(pb->data(), vec.data(), bytes);
+                py::capsule free_when_done(pb, [](void *f) {
+                    delete reinterpret_cast<vlm::gpu::PinnedBuffer*>(f);
+                });
+                return py::array_t<float>(shape, reinterpret_cast<float*>(pb->data()), free_when_done);
+            };
+            
+            auto make_pinned_int = [](const std::vector<int32_t>& vec, const std::vector<ssize_t>& shape) {
+                size_t bytes = vec.size() * sizeof(int32_t);
+                auto* pb = new vlm::gpu::PinnedBuffer(bytes);
+                std::memcpy(pb->data(), vec.data(), bytes);
+                py::capsule free_when_done(pb, [](void *f) {
+                    delete reinterpret_cast<vlm::gpu::PinnedBuffer*>(f);
+                });
+                return py::array_t<int32_t>(shape, reinterpret_cast<int32_t*>(pb->data()), free_when_done);
+            };
+            
+            d["image"] = make_pinned_float(batch.image_data, {
+                batch.batch_size, batch.image_channels, batch.image_height, batch.image_width
+            });
+            d["question_ids"] = make_pinned_int(batch.question_ids, {batch.batch_size, batch.token_length});
+            d["question_mask"] = make_pinned_int(batch.question_mask, {batch.batch_size, batch.token_length});
+            d["answer_ids"] = make_pinned_int(batch.answer_ids, {batch.batch_size, batch.token_length});
+            d["answer_mask"] = make_pinned_int(batch.answer_mask, {batch.batch_size, batch.token_length});
+            
+            py::list meta;
+            for (const auto& m : batch.metadata_json)
+                meta.append(py::str(m));
+            d["metadata"] = meta;
+            
+            if (!batch.padding_mask.empty()) {
+                d["padding_mask"] = make_pinned_float(batch.padding_mask, {
+                    batch.batch_size, 1, batch.image_height, batch.image_width
+                });
+            }
+            return d;
+        }, "Get batch backed by pinned memory (numpy arrays).")
+
+#ifdef VLM_HAS_CUDA
+        // ── get_batch_gpu(): DLPack tensor export ──────────────────
+        .def("get_batch_gpu", [](vlm::AsyncShardLoader& self, int device_id) -> py::dict {
+            bool has_nxt;
+            {
+                py::gil_scoped_release release;
+                has_nxt = self.has_next();
+            }
+            if (!has_nxt)
+                throw py::stop_iteration();
+            vlm::Batch batch;
+            {
+                py::gil_scoped_release release;
+                batch = self.next();
+            }
+            
+            vlm::gpu::PinnedBuffer staging;
+            auto gb = vlm::gpu::transfer_batch(batch, staging, nullptr, device_id);
+            
+            py::module_ torch = py::module_::import("torch.utils.dlpack");
+            py::dict result;
+            
+            auto make_tensor = [&](void* ptr, const std::vector<int64_t>& shape, bool is_float) {
+                DLManagedTensor* dlmt = is_float ? 
+                    vlm::gpu::make_dlpack_float(ptr, shape.data(), static_cast<int32_t>(shape.size()), device_id, true) :
+                    vlm::gpu::make_dlpack_int32(ptr, shape.data(), static_cast<int32_t>(shape.size()), device_id, true);
+                
+                py::capsule dlpack_capsule(dlmt, "dltensor", [](PyObject* obj) {
+                    DLManagedTensor* dlmt = (DLManagedTensor*)PyCapsule_GetPointer(obj, "dltensor");
+                    if (dlmt && dlmt->deleter) dlmt->deleter(dlmt);
+                });
+                return torch.attr("from_dlpack")(dlpack_capsule);
+            };
+            
+            result["image"] = make_tensor(gb.device_image, {gb.batch_size, gb.C, gb.H, gb.W}, true);
+            result["question_ids"] = make_tensor(gb.device_q_ids, {gb.batch_size, gb.T}, false);
+            result["question_mask"] = make_tensor(gb.device_q_mask, {gb.batch_size, gb.T}, false);
+            result["answer_ids"] = make_tensor(gb.device_a_ids, {gb.batch_size, gb.T}, false);
+            result["answer_mask"] = make_tensor(gb.device_a_mask, {gb.batch_size, gb.T}, false);
+            
+            py::list meta;
+            for (const auto& m : batch.metadata_json) meta.append(py::str(m));
+            result["metadata"] = meta;
+            
+            return result;
+        }, py::arg("device_id") = 0, "Get batch transferred to GPU directly.")
+#endif
 
         .def("__repr__", [](const vlm::AsyncShardLoader& self) {
             return "AsyncShardLoader(total_samples="

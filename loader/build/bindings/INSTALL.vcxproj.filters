@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\PC\Desktop\vlm-image-loader\loader\build\CMakeFiles\72f401a3d1ba117dfa703950e340b508\INSTALL_force.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{B10C94F4-6B90-3C40-9E6E-FB285A93A015}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

@@ -238,6 +238,12 @@ struct AsyncShardLoaderImpl {
     std::vector<WorkItem>   work_queue;
     bool                    work_done = false;
 
+    // ── Aggregator thread (SPSC single producer) ───────────────────
+    std::vector<Batch>      pending_batches;
+    std::mutex              pending_mutex;
+    std::condition_variable pending_cv;
+    std::thread             aggregator_thread;
+
     // ── Output queue (SPSC) ────────────────────────────────────────
     std::unique_ptr<SPSCQueue<Batch>> output_queue;
     std::mutex              output_mutex;
@@ -421,13 +427,17 @@ struct AsyncShardLoaderImpl {
         for (int i = 0; i < nw; ++i) {
             workers.emplace_back([this] { worker_loop(); });
         }
+
+        // Start aggregator thread
+        aggregator_thread = std::thread([this] { aggregator_loop(); });
     }
 
     void shutdown() {
         stop_flag.store(true);
 
-        // Wake up all waiting workers
+        // Wake up all waiting workers and aggregator
         work_cv.notify_all();
+        pending_cv.notify_all();
         output_cv.notify_all();
 
         // Join dispatch thread
@@ -439,6 +449,10 @@ struct AsyncShardLoaderImpl {
             if (t.joinable()) t.join();
         }
         workers.clear();
+
+        // Join aggregator thread
+        if (aggregator_thread.joinable())
+            aggregator_thread.join();
     }
 
     /**
@@ -552,16 +566,48 @@ struct AsyncShardLoaderImpl {
                 }
             }
 
-            // ── Push to output queue ───────────────────────────────
-            // Spin with yield until there's space (bounded by prefetch_depth)
-            while (!stop_flag.load(std::memory_order_relaxed)) {
-                if (output_queue->try_push(std::move(batch))) {
-                    batches_produced.fetch_add(1, std::memory_order_release);
-                    // Notify consumer
-                    output_cv.notify_one();
-                    break;
+            // ── Push to pending batches ────────────────────────────
+            {
+                std::lock_guard<std::mutex> lock(pending_mutex);
+                pending_batches.push_back(std::move(batch));
+            }
+            pending_cv.notify_one();
+        }
+    }
+
+    /**
+     * Aggregator loop: runs in its own thread.
+     *
+     * Drains pending_batches and pushes to the SPSC output queue.
+     * This is the single producer for the SPSC queue, preventing races.
+     */
+    void aggregator_loop() {
+        while (!stop_flag.load(std::memory_order_relaxed)) {
+            std::vector<Batch> local_batches;
+            {
+                std::unique_lock<std::mutex> lock(pending_mutex);
+                pending_cv.wait(lock, [this] {
+                    return !pending_batches.empty() || stop_flag.load(std::memory_order_relaxed);
+                });
+
+                if (stop_flag.load(std::memory_order_relaxed) && pending_batches.empty())
+                    return;
+
+                local_batches = std::move(pending_batches);
+                pending_batches.clear();
+            }
+
+            for (auto& batch : local_batches) {
+                // Spin with yield until there's space (bounded by prefetch_depth)
+                while (!stop_flag.load(std::memory_order_relaxed)) {
+                    if (output_queue->try_push(std::move(batch))) {
+                        batches_produced.fetch_add(1, std::memory_order_release);
+                        // Notify consumer
+                        output_cv.notify_one();
+                        break;
+                    }
+                    std::this_thread::yield();
                 }
-                std::this_thread::yield();
             }
         }
     }
@@ -609,10 +655,14 @@ struct AsyncShardLoaderImpl {
         Batch tmp;
         while (output_queue->try_pop(tmp)) {}
 
-        // 3. Clear work queue
+        // 3. Clear work queue and pending batches
         {
             std::lock_guard<std::mutex> lock(work_mutex);
             work_queue.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            pending_batches.clear();
         }
 
         // 4. Advance epoch
@@ -637,6 +687,10 @@ struct AsyncShardLoaderImpl {
         {
             std::lock_guard<std::mutex> lock(work_mutex);
             work_queue.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex);
+            pending_batches.clear();
         }
 
         // 3. Restore state

@@ -425,120 +425,71 @@ def simulate_batches(
     num_batches: int,
     warmup: int = 3,
 ) -> BatchMetrics:
-    """Simulate batch reads from shard files and collect memory/latency metrics.
-
-    Parameters
-    ----------
-    shard_dir : str | Path
-        Directory containing the shard_*.bin files.
-    strategy : str
-        ``"static"`` or ``"dynamic"`` — controls how batch dimensions
-        are computed.
-    batch_size : int
-        Number of samples per batch.
-    num_batches : int
-        Number of timed batches to measure.
-    warmup : int
-        Number of warm-up batches (not timed).
-    """
-    shard_paths = sorted(Path(shard_dir).glob("shard_*.bin"))
-    if not shard_paths:
-        raise FileNotFoundError(f"No shard_*.bin files in {shard_dir}")
-
-    readers: list[ShardReader] = [ShardReader(str(p)) for p in shard_paths]
-    sample_refs: list[tuple[int, int]] = []
-    for ri, reader in enumerate(readers):
-        for si in range(reader.sample_count):
-            sample_refs.append((ri, si))
-
-    if not sample_refs:
-        for r in readers:
-            r.close()
+    """Simulate batch reads from shard files and collect memory/latency metrics."""
+    try:
+        import vlm_loader_py
+    except ImportError:
         return BatchMetrics(strategy=strategy, batch_size=batch_size)
 
-    total = len(sample_refs)
-    needed = (warmup + num_batches) * batch_size
-    indices = list(range(total))
-    if needed > total:
-        indices = (indices * ((needed // total) + 2))[:needed]
+    shard_paths = [str(p) for p in sorted(Path(shard_dir).glob("shard_*.bin"))]
+    if not shard_paths:
+        return BatchMetrics(strategy=strategy, batch_size=batch_size)
 
-    rng = np.random.RandomState(42)
-    rng.shuffle(indices)
+    config = vlm_loader_py.AsyncLoaderConfig()
+    config.shard_paths = shard_paths
+    config.batch_size = batch_size
+    config.prefetch_depth = 2
+    config.num_workers = min(4, os.cpu_count() or 4)
+    config.seed = 42
+    config.shuffle_buffer_size = 0
 
-    is_dynamic = (strategy == "dynamic")
+    loader = vlm_loader_py.AsyncShardLoader(config)
     metrics = BatchMetrics(strategy=strategy, batch_size=batch_size)
 
-    # Warm-up passes (cache priming)
-    for b in range(warmup):
-        for idx in indices[b * batch_size : (b + 1) * batch_size]:
-            ri, si = sample_refs[idx % total]
-            _ = readers[ri].read_sample(si)
+    # Warm-up passes
+    for _ in range(warmup):
+        try:
+            _ = loader.next()
+        except StopIteration:
+            loader.reset()
+            _ = loader.next()
 
     # Timed measurement passes
-    offset = warmup * batch_size
     t_total_start = time.perf_counter()
 
-    for b in range(num_batches):
-        batch_slice = indices[offset + b * batch_size : offset + (b + 1) * batch_size]
+    for _ in range(num_batches):
         t_batch = time.perf_counter()
-
-        batch_samples = []
-        for idx in batch_slice:
-            ri, si = sample_refs[idx % total]
-            batch_samples.append(readers[ri].read_sample(si))
-
+        
+        try:
+            batch = loader.next()
+        except StopIteration:
+            loader.reset()
+            batch = loader.next()
+            
         latency_ms = (time.perf_counter() - t_batch) * 1000.0
         metrics.batch_latencies_ms.append(latency_ms)
-        metrics.total_samples += len(batch_samples)
+        metrics.total_samples += batch.batch_size
         metrics.num_batches += 1
 
         # ── Per-batch image dimensions ──────────────────────────────────────
-        h0 = readers[0].header
-        if is_dynamic:
-            heights = []
-            widths = []
-            for s in batch_samples:
-                if s.actual_height is not None:
-                    heights.append(s.actual_height)
-                    widths.append(s.actual_width)
-                else:
-                    heights.append(h0.image_height)
-                    widths.append(h0.image_width)
-            max_h = max(heights) if heights else h0.image_height
-            max_w = max(widths) if widths else h0.image_width
-        else:
-            max_h = h0.image_height
-            max_w = h0.image_width
-
+        max_h = batch.image_height
+        max_w = batch.image_width
         metrics.batch_img_heights.append(max_h)
         metrics.batch_img_widths.append(max_w)
 
         # GPU image tensor memory: N × C × H × W × float32 bytes
-        # (always float32 after loader normalization, regardless of on-disk dtype)
-        img_mem = batch_size * NUM_CHANNELS * max_h * max_w * ELEM_SIZE_F32
+        img_mem = batch.batch_size * NUM_CHANNELS * max_h * max_w * ELEM_SIZE_F32
         metrics.image_memory_bytes.append(img_mem)
 
         # ── Per-batch text dimensions ───────────────────────────────────────
-        if is_dynamic:
-            max_q_len = max_a_len = 0
-            for s in batch_samples:
-                q_actual = int(np.sum(s.question_mask))
-                a_actual = int(np.sum(s.answer_mask))
-                max_q_len = max(max_q_len, q_actual)
-                max_a_len = max(max_a_len, a_actual)
-            effective_seq = max(max_q_len, max_a_len)
-        else:
-            effective_seq = h0.token_length
-
+        effective_seq = batch.token_length
         metrics.batch_max_seq_lens.append(effective_seq)
+        
         # GPU text tensor memory: N × seq_len × int32 × 4 arrays
-        text_mem = batch_size * effective_seq * ELEM_SIZE_INT32 * NUM_TOKEN_ARRAYS
+        text_mem = batch.batch_size * effective_seq * ELEM_SIZE_INT32 * NUM_TOKEN_ARRAYS
         metrics.text_memory_bytes.append(text_mem)
 
     metrics.total_time_s = time.perf_counter() - t_total_start
-
-    for r in readers:
-        r.close()
 
     return metrics
 

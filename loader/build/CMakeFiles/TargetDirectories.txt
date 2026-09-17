@@ -1,0 +1,7 @@
+C:/Users/PC/Desktop/vlm-image-loader/loader/build/CMakeFiles/vlm_loader.dir
+C:/Users/PC/Desktop/vlm-image-loader/loader/build/CMakeFiles/vlm_lz4.dir
+C:/Users/PC/Desktop/vlm-image-loader/loader/build/CMakeFiles/INSTALL.dir
+C:/Users/PC/Desktop/vlm-image-loader/loader/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/PC/Desktop/vlm-image-loader/loader/build/CMakeFiles/ZERO_CHECK.dir
+C:/Users/PC/Desktop/vlm-image-loader/loader/build/bindings/CMakeFiles/vlm_loader_py.dir
+C:/Users/PC/Desktop/vlm-image-loader/loader/build/bindings/CMakeFiles/INSTALL.dir

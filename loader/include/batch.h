@@ -141,10 +141,23 @@ struct Batch {
         batch.image_channels = channels;
         batch.image_height = height;
         batch.image_width = width;
-        batch.token_length = tok_length;
+        
+        int32_t max_seq = 0;
+        for (const auto& s : samples) {
+            int32_t seq = 0;
+            for (int32_t k = tok_length - 1; k >= 0; --k) {
+                if (s.question_mask[k] != 0 || s.answer_mask[k] != 0) {
+                    seq = k + 1;
+                    break;
+                }
+            }
+            max_seq = std::max(max_seq, seq);
+        }
+        max_seq = std::max(1, max_seq);
+        batch.token_length = max_seq;
 
         const size_t img_size = static_cast<size_t>(channels) * height * width;
-        const size_t tok_size = static_cast<size_t>(tok_length);
+        const size_t tok_size = static_cast<size_t>(max_seq);
 
         batch.image_data.resize(samples.size() * img_size);
         batch.question_ids.resize(samples.size() * tok_size);
@@ -161,22 +174,22 @@ struct Batch {
             );
             std::copy(
                 samples[i].question_ids.begin(),
-                samples[i].question_ids.end(),
+                samples[i].question_ids.begin() + max_seq,
                 batch.question_ids.begin() + static_cast<ptrdiff_t>(i * tok_size)
             );
             std::copy(
                 samples[i].question_mask.begin(),
-                samples[i].question_mask.end(),
+                samples[i].question_mask.begin() + max_seq,
                 batch.question_mask.begin() + static_cast<ptrdiff_t>(i * tok_size)
             );
             std::copy(
                 samples[i].answer_ids.begin(),
-                samples[i].answer_ids.end(),
+                samples[i].answer_ids.begin() + max_seq,
                 batch.answer_ids.begin() + static_cast<ptrdiff_t>(i * tok_size)
             );
             std::copy(
                 samples[i].answer_mask.begin(),
-                samples[i].answer_mask.end(),
+                samples[i].answer_mask.begin() + max_seq,
                 batch.answer_mask.begin() + static_cast<ptrdiff_t>(i * tok_size)
             );
             batch.metadata_json[i] = samples[i].metadata_json;
@@ -212,24 +225,36 @@ struct Batch {
         const auto n = static_cast<int32_t>(samples.size());
         batch.batch_size = n;
         batch.image_channels = channels;
-        batch.token_length = tok_length;
-
+        
         // Step 1: Find max dimensions across all samples in this batch
         int32_t max_h = 0;
         int32_t max_w = 0;
+        int32_t max_seq = 0;
         for (const auto& s : samples) {
             max_h = std::max(max_h, static_cast<int32_t>(s.actual_h));
             max_w = std::max(max_w, static_cast<int32_t>(s.actual_w));
+            
+            int32_t seq = 0;
+            for (int32_t k = tok_length - 1; k >= 0; --k) {
+                if (s.question_mask[k] != 0 || s.answer_mask[k] != 0) {
+                    seq = k + 1;
+                    break;
+                }
+            }
+            max_seq = std::max(max_seq, seq);
         }
+        max_seq = std::max(1, max_seq);
+        
         batch.image_height = max_h;
         batch.image_width = max_w;
+        batch.token_length = max_seq;
 
         // Step 2: Allocate zero-initialized contiguous storage
         const size_t padded_img_size =
             static_cast<size_t>(channels) * max_h * max_w;
         const size_t mask_size =
             static_cast<size_t>(max_h) * max_w;  // single channel
-        const size_t tok_size = static_cast<size_t>(tok_length);
+        const size_t tok_size = static_cast<size_t>(max_seq);
 
         batch.image_data.assign(static_cast<size_t>(n) * padded_img_size, 0.0f);
         batch.padding_mask.assign(static_cast<size_t>(n) * mask_size, 0.0f);
@@ -283,22 +308,22 @@ struct Batch {
 
             // Copy token arrays
             std::copy(
-                s.question_ids.begin(), s.question_ids.end(),
+                s.question_ids.begin(), s.question_ids.begin() + max_seq,
                 batch.question_ids.begin()
                     + static_cast<ptrdiff_t>(i * tok_size)
             );
             std::copy(
-                s.question_mask.begin(), s.question_mask.end(),
+                s.question_mask.begin(), s.question_mask.begin() + max_seq,
                 batch.question_mask.begin()
                     + static_cast<ptrdiff_t>(i * tok_size)
             );
             std::copy(
-                s.answer_ids.begin(), s.answer_ids.end(),
+                s.answer_ids.begin(), s.answer_ids.begin() + max_seq,
                 batch.answer_ids.begin()
                     + static_cast<ptrdiff_t>(i * tok_size)
             );
             std::copy(
-                s.answer_mask.begin(), s.answer_mask.end(),
+                s.answer_mask.begin(), s.answer_mask.begin() + max_seq,
                 batch.answer_mask.begin()
                     + static_cast<ptrdiff_t>(i * tok_size)
             );

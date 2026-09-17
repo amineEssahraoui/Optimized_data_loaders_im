@@ -1,0 +1,10 @@
+^C:\USERS\PC\DESKTOP\VLM-IMAGE-LOADER\LOADER\BUILD\CMAKEFILES\D9742C6781E9B4AA401C741F1FB02AE3\GENERATE.STAMP.RULE
+setlocal
+C:\Users\PC\miniconda3\Lib\site-packages\cmake\data\bin\cmake.exe -SC:/Users/PC/Desktop/vlm-image-loader/loader -BC:/Users/PC/Desktop/vlm-image-loader/loader/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/PC/Desktop/vlm-image-loader/loader/build/vlm_loader.slnx
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
