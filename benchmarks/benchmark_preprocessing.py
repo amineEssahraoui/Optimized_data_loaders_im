@@ -57,9 +57,7 @@ from typing import Any
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
 # Bootstrap imports
-# ---------------------------------------------------------------------------
 _BENCH_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BENCH_DIR.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -84,9 +82,7 @@ from preprocessing.shard_writer import ShardWriter  # noqa: E402
 from preprocessing.tokenizer import TextTokenizer  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
 RESULTS_DIR = _BENCH_DIR / "results"
 
 # Lightweight tokenizer — bert-base-uncased is small and universally cached.
@@ -96,9 +92,7 @@ _IMG_MAX_DIM   = 224   # keep images small so timing reflects I/O, not compute
 _SHARD_SAMPLES = 200   # samples per shard (keeps individual shards manageable)
 
 
-# ---------------------------------------------------------------------------
 # Benchmark result dataclasses
-# ---------------------------------------------------------------------------
 
 @dataclass
 class RunResult:
@@ -127,9 +121,7 @@ class BenchmarkSuite:
     dataloader_results: list[dict[str, Any]] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
 # Shared pipeline config factory
-# ---------------------------------------------------------------------------
 
 def _make_config(
     output_dir: Path,
@@ -170,9 +162,7 @@ def _make_config(
     )
 
 
-# ---------------------------------------------------------------------------
 # Sequential baseline runner
-# ---------------------------------------------------------------------------
 
 def _run_sequential(
     samples: list[VQASample],
@@ -251,9 +241,7 @@ def _run_sequential(
     )
 
 
-# ---------------------------------------------------------------------------
 # Streaming multiprocessing runner
-# ---------------------------------------------------------------------------
 
 def _run_streaming(
     samples: list[VQASample],
@@ -297,9 +285,7 @@ def _run_streaming(
     )
 
 
-# ---------------------------------------------------------------------------
 # DataLoader benchmark
-# ---------------------------------------------------------------------------
 
 def _bench_shard_reader(
     shard_dir: Path,
@@ -429,9 +415,7 @@ def _bench_pytorch_dataloader(
     }
 
 
-# ---------------------------------------------------------------------------
 # Plotting — one metric, one file
-# ---------------------------------------------------------------------------
 
 def plot_throughput_vs_workers(
     results: list[RunResult],
@@ -716,9 +700,7 @@ def plot_dataloader_throughput(
     save_fig(fig, output_path)
 
 
-# ---------------------------------------------------------------------------
 # Console summary
-# ---------------------------------------------------------------------------
 
 def _print_summary(results: list[RunResult], title: str = "Worker Scaling") -> None:
     baseline_sps = results[0].throughput_sps if results else 1.0
@@ -751,9 +733,7 @@ def _print_summary(results: list[RunResult], title: str = "Worker Scaling") -> N
     print()
 
 
-# ---------------------------------------------------------------------------
 # Main benchmark orchestrator
-# ---------------------------------------------------------------------------
 
 def run_benchmark(
     num_samples: int = 1000,
@@ -960,9 +940,7 @@ def run_benchmark(
     return suite
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(

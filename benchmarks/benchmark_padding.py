@@ -73,9 +73,7 @@ from typing import Any
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
 # Bootstrap imports
-# ---------------------------------------------------------------------------
 _BENCH_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BENCH_DIR.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -106,9 +104,7 @@ from preprocessing.shard_writer import ShardWriter
 from preprocessing.tokenizer import TextTokenizer
 
 
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
 RESULTS_DIR = _BENCH_DIR / "results"
 
 STATIC_IMG_H    = 384
@@ -124,9 +120,7 @@ ELEM_SIZE_UINT8 = 1   # bytes per uint8
 _TOKENIZER_ID = "bert-base-uncased"
 
 
-# ---------------------------------------------------------------------------
 # Analysis dataclasses
-# ---------------------------------------------------------------------------
 
 @dataclass
 class StorageMetrics:
@@ -216,9 +210,7 @@ class BatchMetrics:
         return float(np.mean(self.batch_max_seq_lens)) if self.batch_max_seq_lens else 0.0
 
 
-# ---------------------------------------------------------------------------
 # Shard writing
-# ---------------------------------------------------------------------------
 
 def write_static_shards(
     samples: list[VQASample],
@@ -364,9 +356,7 @@ def write_dynamic_shards(
     print(f"  ✓ Dynamic shards: {shard_count} files, {total_mb:.1f} MB total")
 
 
-# ---------------------------------------------------------------------------
 # Storage analysis
-# ---------------------------------------------------------------------------
 
 def analyze_storage(shard_dir: str | Path, strategy: str) -> StorageMetrics:
     """Compute per-sample storage footprint by reading shard headers."""
@@ -417,9 +407,7 @@ def analyze_storage(shard_dir: str | Path, strategy: str) -> StorageMetrics:
     return metrics
 
 
-# ---------------------------------------------------------------------------
 # Batch simulation
-# ---------------------------------------------------------------------------
 
 def simulate_batches(
     shard_dir: str | Path,
@@ -462,13 +450,13 @@ def simulate_batches(
 
     for _ in range(num_batches):
         t_batch = time.perf_counter()
-        
+
         try:
             batch = loader.next()
         except StopIteration:
             loader.reset()
             batch = loader.next()
-            
+
         latency_ms = (time.perf_counter() - t_batch) * 1000.0
         metrics.batch_latencies_ms.append(latency_ms)
         metrics.total_samples += batch.batch_size
@@ -503,9 +491,7 @@ def simulate_batches(
     return metrics
 
 
-# ---------------------------------------------------------------------------
 # Plotting helpers
-# ---------------------------------------------------------------------------
 
 def _pct_reduction(baseline: float, improved: float) -> float:
     if baseline <= 0:
@@ -536,9 +522,7 @@ def _savings_annotation(
     )
 
 
-# ---------------------------------------------------------------------------
 # Individual plot functions — one per metric
-# ---------------------------------------------------------------------------
 
 def plot_storage_footprint(
     static_m: StorageMetrics,
@@ -989,9 +973,7 @@ def plot_latency(
     save_fig(fig, output_path)
 
 
-# ---------------------------------------------------------------------------
 # Console summary
-# ---------------------------------------------------------------------------
 
 def print_summary(
     static_storage: StorageMetrics,
@@ -1064,9 +1046,7 @@ def print_summary(
     print()
 
 
-# ---------------------------------------------------------------------------
 # Main benchmark orchestrator
-# ---------------------------------------------------------------------------
 
 def run_benchmark(
     num_samples: int = 500,
@@ -1235,9 +1215,7 @@ def run_benchmark(
     print(f"Benchmark complete!  6 plots saved to: {output_dir.resolve()}")
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(

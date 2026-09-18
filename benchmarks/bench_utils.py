@@ -23,9 +23,7 @@ from typing import Any
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
 # Bootstrap: ensure project root is importable
-# ---------------------------------------------------------------------------
 _BENCH_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BENCH_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -35,9 +33,7 @@ from preprocessing.schema import VQASample
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
 # Color palette — bright, vibrant, visually distinct
-# ---------------------------------------------------------------------------
 BRIGHT_PALETTE: list[str] = [
     "#4C9BE8",  # vivid sky blue
     "#F4845F",  # warm coral
@@ -57,9 +53,7 @@ COLOR_TEXT    = "#A97CF7"   # violet (text component)
 COLOR_SAVINGS = "#56C490"   # mint green (savings / positive delta)
 COLOR_SPEEDUP = "#E05C8A"   # pink (speedup line overlay)
 
-# ---------------------------------------------------------------------------
 # Dataset specifications — tried in order until one succeeds
-# ---------------------------------------------------------------------------
 _DATASET_SPECS: list[dict[str, Any]] = [
     # merve/vqav2-small: small public VQAv2 subset, real JPEG images
     {
@@ -265,9 +259,7 @@ def _row_to_vqa_sample(
     return sample
 
 
-# ---------------------------------------------------------------------------
 # Matplotlib bright aesthetic
-# ---------------------------------------------------------------------------
 
 def apply_bright_style() -> None:
     """Set global matplotlib rcParams for the bright, spacious benchmark style.
