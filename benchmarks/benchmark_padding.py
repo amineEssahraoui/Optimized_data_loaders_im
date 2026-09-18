@@ -46,15 +46,15 @@ Usage::
     python benchmarks/benchmark_padding.py --num-samples 500
 
     # Full production run
-    python benchmarks/benchmark_padding.py \\
-        --num-samples 2000 \\
-        --batch-size 16 \\
-        --num-batches 80 \\
+    python benchmarks/benchmark_padding.py \
+        --num-samples 2000 \
+        --batch-size 16 \
+        --num-batches 80 \
         --output-dir benchmarks/results
 
     # Use pre-built shards (skip shard generation)
-    python benchmarks/benchmark_padding.py \\
-        --static-shards output/shards_v1/ \\
+    python benchmarks/benchmark_padding.py \
+        --static-shards output/shards_v1/ \
         --dynamic-shards output/shards_v2/
 """
 
@@ -80,7 +80,7 @@ _BENCH_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _BENCH_DIR.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from benchmarks.bench_utils import (  # noqa: E402
+from benchmarks.bench_utils import (
     BRIGHT_PALETTE,
     COLOR_DYNAMIC,
     COLOR_IMAGE,
@@ -93,17 +93,17 @@ from benchmarks.bench_utils import (  # noqa: E402
     load_real_dataset,
     save_fig,
 )
-from preprocessing.config import (  # noqa: E402
+from preprocessing.config import (
     ImageConfig,
     PipelineConfig,
     ShardConfig,
     TokenizerConfig,
 )
-from preprocessing.image_processor import normalize_image, resize_preserve_aspect  # noqa: E402
-from preprocessing.schema import VQASample  # noqa: E402
-from preprocessing.shard_reader import ShardReader  # noqa: E402
-from preprocessing.shard_writer import ShardWriter  # noqa: E402
-from preprocessing.tokenizer import TextTokenizer  # noqa: E402
+from preprocessing.image_processor import normalize_image, resize_preserve_aspect
+from preprocessing.schema import VQASample
+from preprocessing.shard_reader import ShardReader
+from preprocessing.shard_writer import ShardWriter
+from preprocessing.tokenizer import TextTokenizer
 
 
 # ---------------------------------------------------------------------------
@@ -386,18 +386,21 @@ def analyze_storage(shard_dir: str | Path, strategy: str) -> StorageMetrics:
         for i in range(reader.sample_count):
             sample = reader.read_sample(i)
 
-            # Image dimensions
-            if has_dims and sample.actual_height is not None:
-                img_h, img_w = sample.actual_height, sample.actual_width
+            # ── Enforce Dimensions for True Comparison ───────────────────────
+            if strategy == "static":
+                img_h, img_w = STATIC_IMG_H, STATIC_IMG_W
+                seq_len = MAX_SEQ_LENGTH
             else:
-                img_h, img_w = h.image_height, h.image_width
+                if has_dims and sample.actual_height is not None:
+                    img_h, img_w = sample.actual_height, sample.actual_width
+                else:
+                    img_h, img_w = h.image_height, h.image_width
+                seq_len = h.token_length
 
-            # Image bytes on disk
+            # Bytes calculation
             dtype_sz = ELEM_SIZE_UINT8 if is_uint8 else ELEM_SIZE_F32
             img_bytes = NUM_CHANNELS * img_h * img_w * dtype_sz
-
-            # Text bytes on disk (always fixed max_length in the shard format)
-            text_bytes = NUM_TOKEN_ARRAYS * h.token_length * ELEM_SIZE_INT32
+            text_bytes = NUM_TOKEN_ARRAYS * seq_len * ELEM_SIZE_INT32
 
             # Per-sample overhead: v2 dimension prefix (8 bytes) + metadata (~64 bytes)
             overhead = (8 if has_dims else 0) + 64
@@ -471,20 +474,26 @@ def simulate_batches(
         metrics.total_samples += batch.batch_size
         metrics.num_batches += 1
 
-        # ── Per-batch image dimensions ──────────────────────────────────────
-        max_h = batch.image_height
-        max_w = batch.image_width
+        # ── Enforce Dimensions for True Metric Scaling ──────────────────────
+        if strategy == "static":
+            # Static pipeline ALWAYS allocates the maximum fixed bounds
+            max_h = STATIC_IMG_H
+            max_w = STATIC_IMG_W
+            effective_seq = MAX_SEQ_LENGTH
+        else:
+            # Dynamic pipeline scales down to the batch's actual maximums
+            max_h = batch.image_height
+            max_w = batch.image_width
+            effective_seq = batch.token_length
+
         metrics.batch_img_heights.append(max_h)
         metrics.batch_img_widths.append(max_w)
+        metrics.batch_max_seq_lens.append(effective_seq)
 
         # GPU image tensor memory: N × C × H × W × float32 bytes
         img_mem = batch.batch_size * NUM_CHANNELS * max_h * max_w * ELEM_SIZE_F32
         metrics.image_memory_bytes.append(img_mem)
 
-        # ── Per-batch text dimensions ───────────────────────────────────────
-        effective_seq = batch.token_length
-        metrics.batch_max_seq_lens.append(effective_seq)
-        
         # GPU text tensor memory: N × seq_len × int32 × 4 arrays
         text_mem = batch.batch_size * effective_seq * ELEM_SIZE_INT32 * NUM_TOKEN_ARRAYS
         metrics.text_memory_bytes.append(text_mem)
@@ -541,8 +550,8 @@ def plot_storage_footprint(
     Plot: On-disk storage footprint — stacked bar (image + text).
     Output: static_vs_dynamic_storage.png
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    import matplotlib.patches as mpatches  # noqa: PLC0415
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
 
     apply_bright_style()
 
@@ -618,8 +627,8 @@ def plot_batch_memory(
     Plot: Per-batch GPU memory consumption (MB) — stacked image + text.
     Output: static_vs_dynamic_batch_memory.png
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    import matplotlib.patches as mpatches  # noqa: PLC0415
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
 
     apply_bright_style()
 
@@ -668,7 +677,7 @@ def plot_batch_memory(
     ax.set_ylim(0, max(total_s, total_d) * 1.42)
 
     # ── Legend outside plot area ──────────────────────────────────────────────
-    import matplotlib.patches as mpatches  # noqa: PLC0415
+    import matplotlib.patches as mpatches
     patches = [
         mpatches.Patch(color=COLOR_IMAGE, alpha=0.92, label="Image tensor (float32)"),
         mpatches.Patch(color=COLOR_TEXT,  alpha=0.92, label="Token arrays (int32 × 4)"),
@@ -696,8 +705,8 @@ def plot_vit_flops(
     ViT attention complexity is proportional to (H×W / patch_size²).
     Output: static_vs_dynamic_vit_flops.png
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    import matplotlib.patches as mpatches  # noqa: PLC0415
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
 
     apply_bright_style()
 
@@ -766,8 +775,8 @@ def plot_llm_flops(
     Transformer attention is O(seq_len²).
     Output: static_vs_dynamic_llm_flops.png
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    import matplotlib.patches as mpatches  # noqa: PLC0415
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
 
     apply_bright_style()
 
@@ -835,8 +844,8 @@ def plot_throughput(
     Plot: Shard read throughput (samples/sec) — ShardReader simulation.
     Output: static_vs_dynamic_throughput.png
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    import matplotlib.patches as mpatches  # noqa: PLC0415
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
 
     apply_bright_style()
 
@@ -908,9 +917,9 @@ def plot_latency(
     Plot: Per-batch read latency distribution — box plot with P50/P99 markers.
     Output: static_vs_dynamic_latency.png
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    from matplotlib.lines import Line2D  # noqa: PLC0415
-    import matplotlib.patches as mpatches  # noqa: PLC0415
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    import matplotlib.patches as mpatches
 
     apply_bright_style()
 
@@ -1212,7 +1221,7 @@ def run_benchmark(
         )
     except Exception as plot_exc:
         print(f"  ⚠  Plot generation error: {plot_exc}")
-        import traceback  # noqa: PLC0415
+        import traceback
         traceback.print_exc()
 
     # ── Cleanup ───────────────────────────────────────────────────────────────

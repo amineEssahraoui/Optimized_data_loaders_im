@@ -1,14 +1,13 @@
 """
 Python-side binary shard reader for validation purposes.
 
-This module reads the shard files produced by shard_writer.py and
-reconstructs the original data (image tensors, token arrays, metadata).
-Its primary purpose is round-trip validation: write data with the writer,
-read it back with this reader, and verify exact equality.
+Reads shard files produced by shard_writer.py and reconstructs the
+original data (image tensors, token arrays, metadata). Its primary
+purpose is round-trip validation: write with the writer, read back
+with this reader, and verify exact equality.
 
-The C++ loader (loader/) is the production reader.  This Python reader
-exists only for testing and debugging, and mirrors the C++ reader's
-parsing logic exactly so that any discrepancy indicates a bug.
+The C++ loader (loader/) is the production reader. This Python reader
+exists for testing and debugging, and mirrors the C++ parsing logic.
 """
 
 from __future__ import annotations
@@ -23,11 +22,10 @@ from typing import Any
 
 import numpy as np
 
-# We import the LZ4 flag to detect compressed shards
 from preprocessing.shard_writer import (
+    FLAG_LZ4_COMPRESSED,
     FLAG_PER_SAMPLE_DIMS,
     FLAG_UINT8_STORAGE,
-    FLAG_LZ4_COMPRESSED,
     FORMAT_VERSION,
     FORMAT_VERSION_V2,
     HEADER_SIZE,
@@ -49,19 +47,18 @@ class ShardHeader:
     image_height: int
     image_width: int
     token_length: int
-    flags: int = 0  # v2 only; 0 for v1
+    flags: int = 0
 
 
 @dataclasses.dataclass
 class ShardSample:
     """A single sample reconstructed from a shard file."""
-    image_tensor: np.ndarray      # float32, shape (C, H, W)
-    question_ids: np.ndarray      # int32, shape (T,)
-    question_mask: np.ndarray     # int32, shape (T,)
-    answer_ids: np.ndarray        # int32, shape (T,)
-    answer_mask: np.ndarray       # int32, shape (T,)
+    image_tensor: np.ndarray
+    question_ids: np.ndarray
+    question_mask: np.ndarray
+    answer_ids: np.ndarray
+    answer_mask: np.ndarray
     metadata: dict[str, Any]
-    # V2 per-sample dimensions (None for v1)
     orig_height: int | None = None
     orig_width: int | None = None
     actual_height: int | None = None
@@ -74,27 +71,13 @@ class ShardReader:
     Usage::
 
         reader = ShardReader("output/shard_0000.bin")
-        print(reader.header.sample_count)
         sample = reader.read_sample(0)
-        print(sample.image_tensor.shape)
         reader.close()
 
     Supports both sequential and random access via the offset table.
     """
 
     def __init__(self, path: str | Path) -> None:
-        """Open a shard file and parse its header and offset table.
-
-        Parameters
-        ----------
-        path : str | Path
-            Path to the shard file.
-
-        Raises
-        ------
-        ValueError
-            If the file has an invalid magic, version, or checksum.
-        """
         self._path = Path(path)
         self._file = open(self._path, "rb")
 
@@ -121,7 +104,6 @@ class ShardReader:
                 f"Shard file too small for header: {len(raw)} < {HEADER_SIZE}"
             )
 
-        # First, peek at the version to decide the parse format
         magic = raw[:8]
         if magic != MAGIC_START:
             raise ValueError(
@@ -131,56 +113,33 @@ class ShardReader:
         version = struct.unpack_from("<I", raw, 8)[0]
 
         if version == FORMAT_VERSION:
-            # V1 header: 24 bytes reserved at end
             (
-                magic,
-                version,
-                sample_count,
-                offset_table_pos,
-                channels,
-                height,
-                width,
-                token_length,
-                _reserved,
+                magic, version, sample_count, offset_table_pos,
+                channels, height, width, token_length, _reserved,
             ) = struct.unpack("<8sIIQIIII24s", raw)
 
             return ShardHeader(
-                magic=magic,
-                version=version,
+                magic=magic, version=version,
                 sample_count=sample_count,
                 offset_table_pos=offset_table_pos,
                 image_channels=channels,
-                image_height=height,
-                image_width=width,
-                token_length=token_length,
-                flags=0,
+                image_height=height, image_width=width,
+                token_length=token_length, flags=0,
             )
 
         elif version == FORMAT_VERSION_V2:
-            # V2 header: 4-byte flags + 20 bytes reserved
             (
-                magic,
-                version,
-                sample_count,
-                offset_table_pos,
-                channels,
-                height,
-                width,
-                token_length,
-                flags,
-                _reserved,
+                magic, version, sample_count, offset_table_pos,
+                channels, height, width, token_length, flags, _reserved,
             ) = struct.unpack("<8sIIQIIIII20s", raw)
 
             return ShardHeader(
-                magic=magic,
-                version=version,
+                magic=magic, version=version,
                 sample_count=sample_count,
                 offset_table_pos=offset_table_pos,
                 image_channels=channels,
-                image_height=height,
-                image_width=width,
-                token_length=token_length,
-                flags=flags,
+                image_height=height, image_width=width,
+                token_length=token_length, flags=flags,
             )
 
         else:
@@ -208,7 +167,7 @@ class ShardReader:
             + self._header.sample_count * 16
         )
         self._file.seek(footer_pos)
-        footer_data = self._file.read(12)  # 4 bytes checksum + 8 bytes magic
+        footer_data = self._file.read(12)
         if len(footer_data) < 12:
             raise ValueError("Truncated footer")
 
@@ -220,7 +179,6 @@ class ShardReader:
                 f"Invalid end magic: expected {MAGIC_END!r}, got {end_magic!r}"
             )
 
-        # Recompute CRC32 over everything before the footer
         self._file.seek(0)
         content = self._file.read(footer_pos)
         computed_checksum = zlib.crc32(content) & 0xFFFFFFFF
@@ -242,23 +200,7 @@ class ShardReader:
         return self._header.sample_count
 
     def read_sample(self, index: int) -> ShardSample:
-        """Read a single sample by index using the offset table.
-
-        Parameters
-        ----------
-        index : int
-            Zero-based sample index.
-
-        Returns
-        -------
-        ShardSample
-            The reconstructed sample with all fields.
-
-        Raises
-        ------
-        IndexError
-            If the index is out of range.
-        """
+        """Read a single sample by index using the offset table."""
         if index < 0 or index >= self._header.sample_count:
             raise IndexError(
                 f"Sample index {index} out of range [0, {self._header.sample_count})"
@@ -266,8 +208,6 @@ class ShardReader:
 
         offset, length = self._offsets[index]
         self._file.seek(offset)
-        
-        # 1. Read the entire sample record into memory (Buffer-based parsing)
         raw_data = self._file.read(length)
 
         h = self._header
@@ -276,65 +216,67 @@ class ShardReader:
         is_uint8 = is_v2 and (h.flags & FLAG_UINT8_STORAGE)
         is_lz4 = is_v2 and (h.flags & FLAG_LZ4_COMPRESSED)
 
-        # 2. Decompress if necessary
         if is_lz4:
             import lz4.block
-            # First 4 bytes hold the uncompressed size
             uncompressed_size = struct.unpack_from("<I", raw_data)[0]
-            # Decompress the rest of the buffer
-            buffer = lz4.block.decompress(raw_data[4:], uncompressed_size=uncompressed_size)
+            buffer = lz4.block.decompress(
+                raw_data[4:], uncompressed_size=uncompressed_size
+            )
         else:
             buffer = raw_data
 
         buf_offset = 0
 
-        # 3. Parse fields sequentially from the in-memory buffer
-        # --- Per-sample dimension prefix (v2 only) ---
         orig_height = orig_width = actual_height = actual_width = None
         if has_per_sample_dims:
-            orig_height, orig_width, actual_height, actual_width = struct.unpack_from("<HHHH", buffer, buf_offset)
+            orig_height, orig_width, actual_height, actual_width = (
+                struct.unpack_from("<HHHH", buffer, buf_offset)
+            )
             buf_offset += 8
             img_h, img_w = actual_height, actual_width
         else:
             img_h, img_w = h.image_height, h.image_width
 
-        # --- Read image tensor ---
         if is_uint8:
-            # V2: uint8 CHW, variable size
             img_size = h.image_channels * img_h * img_w
-            image_tensor = np.frombuffer(buffer, dtype=np.uint8, count=img_size, offset=buf_offset).reshape(
-                h.image_channels, img_h, img_w
-            ).copy().astype(np.float32) / 255.0
+            image_tensor = np.frombuffer(
+                buffer, dtype=np.uint8, count=img_size, offset=buf_offset,
+            ).reshape(h.image_channels, img_h, img_w).copy().astype(np.float32) / 255.0
             buf_offset += img_size
         else:
-            # V1: float32 CHW, fixed size
             img_size = h.image_channels * img_h * img_w * 4
-            image_tensor = np.frombuffer(buffer, dtype=np.float32, count=img_size // 4, offset=buf_offset).reshape(
-                h.image_channels, img_h, img_w
-            ).copy()
+            image_tensor = np.frombuffer(
+                buffer, dtype=np.float32, count=img_size // 4, offset=buf_offset,
+            ).reshape(h.image_channels, img_h, img_w).copy()
             buf_offset += img_size
 
-        # --- Read token arrays ---
         token_count = h.token_length
         token_bytes = token_count * 4
 
-        q_ids = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
-        buf_offset += token_bytes
-        
-        q_mask = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
-        buf_offset += token_bytes
-        
-        a_ids = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
-        buf_offset += token_bytes
-        
-        a_mask = np.frombuffer(buffer, dtype=np.int32, count=token_count, offset=buf_offset).copy()
+        q_ids = np.frombuffer(
+            buffer, dtype=np.int32, count=token_count, offset=buf_offset,
+        ).copy()
         buf_offset += token_bytes
 
-        # --- Read metadata ---
+        q_mask = np.frombuffer(
+            buffer, dtype=np.int32, count=token_count, offset=buf_offset,
+        ).copy()
+        buf_offset += token_bytes
+
+        a_ids = np.frombuffer(
+            buffer, dtype=np.int32, count=token_count, offset=buf_offset,
+        ).copy()
+        buf_offset += token_bytes
+
+        a_mask = np.frombuffer(
+            buffer, dtype=np.int32, count=token_count, offset=buf_offset,
+        ).copy()
+        buf_offset += token_bytes
+
         meta_len = struct.unpack_from("<I", buffer, buf_offset)[0]
         buf_offset += 4
-        
-        meta_json = buffer[buf_offset : buf_offset + meta_len].decode("utf-8")
+
+        meta_json = buffer[buf_offset:buf_offset + meta_len].decode("utf-8")
         metadata = json.loads(meta_json)
 
         return ShardSample(

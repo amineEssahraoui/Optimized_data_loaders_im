@@ -1,8 +1,6 @@
 # VLM Preprocessing Pipeline -- Main Configuration
 # Every configurable parameter for the pipeline lives here.
 # Behavior is changed by editing this file, not by editing code.
-# Sub-sections: dataset, image, tokenizer, shard, and top-level pipeline
-# parameters.
 
 # Dataset source and column mapping
 dataset:
@@ -17,19 +15,18 @@ dataset:
   split: "train"
 
   # Map canonical field names to dataset-specific column names.
-  # Change these when switching to a different VQA dataset -- no code changes needed.
+  # Change these when switching to a different VQA dataset.
   column_mapping:
-    image: "image"            # column containing the image (PIL or bytes)
-    question: "question"      # column containing the question text
-    answer: "model_answer"    # column containing the answer text
-    id: "id"                  # column containing the sample id (optional)
-    reasoning: "model_reasoning"  # column containing reasoning text (optional, stored in metadata)
+    image: "image"
+    question: "question"
+    answer: "model_answer"
+    id: "id"
+    reasoning: "model_reasoning"
 
-  # Limit number of samples to process (null = process all).
-  # Useful for debugging and fast iteration.
+  # Limit number of samples to process (null = process all)
   max_samples: null
 
-  # Whether to use HuggingFace streaming mode (avoids downloading the full dataset)
+  # Whether to use HuggingFace streaming mode
   streaming: false
 
 # Image preprocessing
@@ -37,10 +34,7 @@ image:
   # Target image dimensions (height, width) after resize/crop
   target_size: [384, 384]
 
-  # Resize strategy:
-  #   "resize_and_pad" -- resize longest side to target, pad shorter side
-  #   "center_crop"    -- resize shortest side to target, center crop
-  #   "resize"         -- resize to exact target dimensions (may distort)
+  # Resize strategy: "resize_and_pad", "center_crop", "resize"
   resize_strategy: "resize_and_pad"
 
   # Target color space after decoding
@@ -52,22 +46,18 @@ image:
   # Per-channel normalization std (ImageNet default)
   normalization_std: [0.229, 0.224, 0.225]
 
-  # Interpolation method for resizing
-  # Options: "bicubic", "bilinear", "lanczos", "nearest"
+  # Interpolation method: "bicubic", "bilinear", "lanczos", "nearest"
   interpolation: "bicubic"
 
   # Pixel value used for padding (0-255)
   pad_value: 0
 
-  # Maximum image dimension for aspect-ratio-preserving resize (v2 format).
-  # The longest side is scaled to this value; the shorter side preserves
-  # the original aspect ratio.
+  # Maximum image dimension for aspect-ratio-preserving resize (v2 format)
   max_image_dim: 384
 
   # Storage data type in binary shards:
   #   "float32" -- v1 format, normalized at preprocessing time
-  #   "uint8"   -- v2 format, raw pixels, 4x I/O reduction,
-  #                normalization deferred to C++ loader
+  #   "uint8"   -- v2 format, raw pixels, normalization deferred to C++ loader
   storage_dtype: "uint8"
 
   # Enable dynamic padding (variable-size images, padded at batch time)
@@ -75,61 +65,55 @@ image:
 
 # Text tokenization
 tokenizer:
-  # Pretrained tokenizer model (HuggingFace hub identifier or local path).
-  # The pipeline loads this dynamically, so swapping tokenizers requires
-  # only a config change.
+  # Pretrained tokenizer model (HuggingFace hub identifier or local path)
   model_name_or_path: "inceptionai/jais-13b-chat"
 
   # Maximum sequence length after tokenization
   max_length: 512
 
-  # Padding strategy: "max_length"
+  # Padding strategy: "max_length", "longest", "do_not_pad"
   padding: "max_length"
 
   # Whether to truncate sequences exceeding max_length
   truncation: true
 
-  # Whether to allow custom tokenizer code from the model repo.
-  # Required for models like jais-13b-chat that use non-standard architectures.
+  # Whether to allow custom tokenizer code from the model repo
   trust_remote_code: true
 
   # Whether to add BOS/EOS special tokens
   add_special_tokens: true
+
+  # Text padding strategy:
+  #   false (default) -- static: pad every sequence to max_length at preprocessing
+  #   true            -- dynamic: tokenize without padding, defer to batch collation
+  dynamic_text_padding: false
 
 # Binary shard output
 shard:
   # Directory where processed shards are written
   output_dir: "./output/shards"
 
-  # Target size per shard file in megabytes.
-  # Smaller shards = better parallelism but more file handles.
+  # Target size per shard file in megabytes
   shard_size_mb: 256
 
-  # Maximum number of samples per shard file.
-  # Once this limit is reached, the current shard is finalized and a new one
-  # is opened automatically.  null = no sample-count limit (size-based only).
+  # Maximum number of samples per shard file (null = size-based only)
   max_samples_per_shard: null
 
-  # Compression algorithm for shard data.
-  # null = uncompressed (fastest C++ reads, largest files)
-  # "lz4" = fast compression (good balance)
+  # Compression algorithm (null = uncompressed, "lz4" = fast compression)
   compression: null
 
-  # Byte alignment for memory-mapped access in C++.
-  # Must be a power of 2.  64 bytes aligns with typical cache lines.
+  # Byte alignment for memory-mapped access (must be a power of 2)
   alignment_bytes: 64
 
-  # Binary shard format version:
-  #   1 = legacy float32 with fixed dimensions
-  #   2 = uint8 storage with per-sample dimensions (recommended)
+  # Binary shard format version: 1 (legacy float32) or 2 (uint8, recommended)
   format_version: 2
+
+  # Path for the shard manifest JSON output (null = no manifest)
+  manifest_path: "./output/shards/manifest.json"
 
 # Pipeline-level parameters
 
-# Shuffling strategy for sample ordering in shards.
-#   "none"   -- no shuffling, samples are written in ingestion order
-#   "local"  -- in-shard shuffling (samples shuffled within each shard before writing)
-#   "global" -- cross-shard shuffling (entire dataset shuffled before sharding)
+# Shuffling strategy: "none", "local" (in-shard), "global" (cross-shard)
 shuffling: "none"
 
 # Number of parallel preprocessing workers (0 = single-threaded)
@@ -140,3 +124,14 @@ log_level: "INFO"
 
 # Global random seed for reproducibility
 seed: 42
+
+# How often (in samples) to log progress during processing
+progress_interval: 50
+
+# Default chunk size for the streaming pipeline when max_samples_per_shard
+# is not configured
+streaming_chunk_size: 500
+
+# If true, abort on first sample processing error.
+# If false, skip failed samples and continue.
+fail_fast: false

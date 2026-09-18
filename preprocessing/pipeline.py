@@ -8,14 +8,8 @@ Connects all stages into a single end-to-end workflow:
     4. Write: serialize everything into binary shard files.
 
 This module is the top-level entry point for the Python preprocessing
-stage.  It reads all behavior from the PipelineConfig and does not
+stage. It reads all behavior from the PipelineConfig and does not
 hardcode any processing parameters.
-
-Phase 4 additions:
-    - Streaming shard-by-shard preprocessing (memory-bounded).
-    - Multiprocessing via ``concurrent.futures.ProcessPoolExecutor``.
-    - Per-worker tokenizer initialization (HuggingFace tokenizers are
-      not fork-safe, so each worker process creates its own instance).
 
 Usage from the command line::
 
@@ -30,13 +24,13 @@ import logging
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from preprocessing.config import PipelineConfig, load_config
+from configs.config import PipelineConfig, load_config
 from preprocessing.image_processor import normalize_image, resize_preserve_aspect
 from preprocessing.ingest import ingest_dataset
 from preprocessing.schema import VQASample
@@ -56,40 +50,29 @@ def _setup_logging(level: str) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Per-worker state for multiprocessing
-# ---------------------------------------------------------------------------
-# Module-level globals used by worker processes.  Initialised once per
-# worker via ``_init_worker_tokenizer``.  This avoids pickling the
-# tokenizer (which would fail) and ensures each subprocess has its own
-# HuggingFace tokenizer instance.
+# Per-worker state for multiprocessing.
+# Module-level globals initialized once per worker via _init_worker_tokenizer.
 _worker_config: PipelineConfig | None = None
 _worker_tokenizer: TextTokenizer | None = None
 
 
 def _init_worker_tokenizer(config: PipelineConfig) -> None:
-    """Initializer called once per ``ProcessPoolExecutor`` worker.
+    """Initializer called once per ProcessPoolExecutor worker.
 
-    Creates a dedicated ``TextTokenizer`` instance in the worker
-    process.  HuggingFace tokenizers are **not** fork-safe, so they
-    must be constructed inside the child process, not in the parent.
-
-    The ``PipelineConfig`` dataclass is frozen and lightweight, so it
-    can be pickled safely across the process boundary.
+    Creates a dedicated TextTokenizer instance in the worker process.
+    HuggingFace tokenizers are not fork-safe, so they must be constructed
+    inside the child process.
     """
     global _worker_config, _worker_tokenizer  # noqa: PLW0603
     _worker_config = config
     _worker_tokenizer = TextTokenizer(config.tokenizer)
 
 
-def _process_sample_in_worker(
-    sample: VQASample,
-) -> dict[str, Any] | None:
+def _process_sample_in_worker(sample: VQASample) -> dict[str, Any] | None:
     """Process a single sample inside a worker process.
 
-    Uses the module-level ``_worker_config`` and ``_worker_tokenizer``
-    that were initialised by ``_init_worker_tokenizer``.  Returns a
-    dict ready for ``ShardWriter.add_sample``, or ``None`` on error.
+    Uses the module-level _worker_config and _worker_tokenizer that were
+    initialized by _init_worker_tokenizer.
     """
     config = _worker_config
     tokenizer = _worker_tokenizer
@@ -100,10 +83,6 @@ def _process_sample_in_worker(
     return _preprocess_sample(sample, config, tokenizer)
 
 
-# ---------------------------------------------------------------------------
-# Single-sample preprocessing (used by both sequential and parallel paths)
-# ---------------------------------------------------------------------------
-
 def _preprocess_sample(
     sample: VQASample,
     config: PipelineConfig,
@@ -111,7 +90,7 @@ def _preprocess_sample(
 ) -> dict[str, Any] | None:
     """Preprocess a single sample (normalize + tokenize).
 
-    Returns a dict ready for ``ShardWriter.add_sample``, or None on error.
+    Returns a dict ready for ShardWriter.add_sample, or None on error.
     Uses the v2 path (uint8 + per-sample dims) when dynamic_padding is enabled.
     """
     try:
@@ -139,6 +118,11 @@ def _preprocess_sample(
         metadata["original_width"] = orig_w
         metadata["original_height"] = orig_h
 
+        # Store actual token lengths when dynamic text padding is enabled
+        if config.tokenizer.dynamic_text_padding:
+            metadata["actual_question_length"] = q_tokens.actual_length
+            metadata["actual_answer_length"] = a_tokens.actual_length
+
         result: dict[str, Any] = {
             "image_tensor": image_arr,
             "question_ids": q_tokens.input_ids,
@@ -148,22 +132,19 @@ def _preprocess_sample(
             "metadata": metadata,
         }
 
-        # V2: pass per-sample dimensions to the shard writer
         if use_v2 and actual_h is not None:
             result["orig_height"] = orig_h
             result["orig_width"] = orig_w
 
         return result
     except Exception as exc:
+        if config.fail_fast:
+            raise
         logger.warning(
             "Failed to process sample (id=%s): %s", sample.sample_id, exc,
         )
         return None
 
-
-# ---------------------------------------------------------------------------
-# Sequential (legacy) pipeline paths — unchanged from Phase 1-3
-# ---------------------------------------------------------------------------
 
 def _run_local_shuffle_pipeline(
     samples: list[VQASample],
@@ -174,31 +155,14 @@ def _run_local_shuffle_pipeline(
 ) -> tuple[int, int, int, int]:
     """Execute the pipeline with local (in-shard) shuffling.
 
-    Preprocesses all samples first, groups them into shard-sized chunks
-    using ``max_samples_per_shard``, shuffles each chunk independently,
-    then writes them to shard files.
+    Preprocesses all samples, groups into shard-sized chunks using
+    max_samples_per_shard, shuffles each chunk, then writes them.
 
-    Parameters
-    ----------
-    samples : list[VQASample]
-        Ingested samples in original order.
-    config : PipelineConfig
-        Full pipeline config.
-    tokenizer : TextTokenizer
-        Initialized tokenizer.
-    output_dir : Path
-        Directory where shard files are written.
-    rng : np.random.RandomState
-        Seeded random state for reproducible shuffling.
-
-    Returns
-    -------
-    tuple[int, int, int, int]
-        (last_shard_index, total_bytes, processed_count, error_count)
+    Returns (last_shard_index, total_bytes, processed_count, error_count).
     """
-    # Phase 1: Preprocess all samples
     preprocessed: list[dict[str, Any]] = []
     error_count = 0
+    progress_interval = config.progress_interval
 
     for i, sample in enumerate(samples):
         result = _preprocess_sample(sample, config, tokenizer)
@@ -207,7 +171,7 @@ def _run_local_shuffle_pipeline(
         else:
             error_count += 1
 
-        if (i + 1) % 50 == 0:
+        if (i + 1) % progress_interval == 0:
             logger.info("Preprocessed %d / %d samples...", i + 1, len(samples))
 
     processed_count = len(preprocessed)
@@ -216,12 +180,8 @@ def _run_local_shuffle_pipeline(
         processed_count, error_count,
     )
 
-    # Phase 2: Group into shard-sized chunks
     max_per_shard = config.shard.max_samples_per_shard
     if max_per_shard is None or max_per_shard <= 0:
-        # No sample-count limit: put all samples in one group
-        # (size-based rotation not used in local shuffle mode since
-        # we cannot predict byte sizes without writing)
         shard_groups: list[list[dict[str, Any]]] = [preprocessed]
     else:
         shard_groups = [
@@ -229,12 +189,10 @@ def _run_local_shuffle_pipeline(
             for start in range(0, len(preprocessed), max_per_shard)
         ]
 
-    # Phase 3: Shuffle each group and write
     shard_index = 0
     total_bytes = 0
 
     for group in shard_groups:
-        # Shuffle within this shard
         indices = rng.permutation(len(group)).tolist()
         shuffled_group = [group[i] for i in indices]
 
@@ -253,15 +211,9 @@ def _run_local_shuffle_pipeline(
         )
         shard_index += 1
 
-    # Return last shard index (0-based), not count.
-    # If no shards were written (all samples errored), return 0.
     last_index = max(shard_index - 1, 0)
     return last_index, total_bytes, processed_count, error_count
 
-
-# ---------------------------------------------------------------------------
-# Streaming multiprocessing pipeline (Phase 4)
-# ---------------------------------------------------------------------------
 
 def _process_chunk_with_executor(
     chunk: list[VQASample],
@@ -269,34 +221,17 @@ def _process_chunk_with_executor(
     executor: ProcessPoolExecutor | None,
     tokenizer: TextTokenizer | None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Process a chunk of samples using a pre-created executor or tokenizer.
+    """Process a chunk of samples using an executor or tokenizer.
 
-    When ``executor`` is provided, work is dispatched to the pool (whose
-    workers already have their tokenizers initialised).  When ``executor``
-    is None, ``tokenizer`` must be provided for sequential processing.
+    When executor is provided, dispatches to the pool. When executor
+    is None, tokenizer must be provided for sequential processing.
 
-    Parameters
-    ----------
-    chunk : list[VQASample]
-        Samples to process in this chunk.
-    config : PipelineConfig
-        Frozen pipeline config.
-    executor : ProcessPoolExecutor | None
-        A pre-created, long-lived pool.  Workers must already have
-        been initialised via ``_init_worker_tokenizer``.
-    tokenizer : TextTokenizer | None
-        Pre-created tokenizer for sequential fallback.
-
-    Returns
-    -------
-    tuple[list[dict], int]
-        (processed_results, error_count).
+    Returns (processed_results, error_count).
     """
     processed: list[dict[str, Any]] = []
     error_count = 0
 
     if executor is None:
-        # Sequential path
         assert tokenizer is not None
         for sample in chunk:
             result = _preprocess_sample(sample, config, tokenizer)
@@ -306,7 +241,6 @@ def _process_chunk_with_executor(
                 error_count += 1
         return processed, error_count
 
-    # Parallel path — use the pre-created executor
     effective_workers = executor._max_workers  # type: ignore[attr-defined]
     try:
         results = list(executor.map(
@@ -319,7 +253,6 @@ def _process_chunk_with_executor(
             "Multiprocessing pool error: %s. Falling back to sequential.",
             exc,
         )
-        # Fallback: process sequentially in the main process
         fallback_tok = tokenizer or TextTokenizer(config.tokenizer)
         for sample in chunk:
             result = _preprocess_sample(sample, config, fallback_tok)
@@ -338,71 +271,24 @@ def _process_chunk_with_executor(
     return processed, error_count
 
 
-# Keep the old name as an alias for backward compatibility (used by tests
-# and the benchmark script).  Creates a one-shot pool internally.
-def _process_chunk_parallel(
-    chunk: list[VQASample],
-    config: PipelineConfig,
-    num_workers: int,
-) -> tuple[list[dict[str, Any]], int]:
-    """Convenience wrapper: process a chunk, creating a pool if needed.
-
-    Prefer ``_process_chunk_with_executor`` for hot-path code that
-    processes many chunks — it avoids repeated pool/tokenizer init.
-    """
-    effective_workers = min(num_workers, len(chunk), os.cpu_count() or 1)
-
-    if effective_workers <= 1:
-        tokenizer = TextTokenizer(config.tokenizer)
-        return _process_chunk_with_executor(chunk, config, None, tokenizer)
-
-    with ProcessPoolExecutor(
-        max_workers=effective_workers,
-        initializer=_init_worker_tokenizer,
-        initargs=(config,),
-    ) as executor:
-        return _process_chunk_with_executor(chunk, config, executor, None)
-
-
 def _run_streaming_pipeline(
     samples: list[VQASample],
     config: PipelineConfig,
     output_dir: Path,
     rng: np.random.RandomState,
 ) -> tuple[int, int, int, int]:
-    """Streaming multiprocessing pipeline (Phase 4).
+    """Streaming multiprocessing pipeline.
 
     Processes the dataset shard-by-shard to keep memory usage bounded:
+    1. Partition into chunks of streaming_chunk_size (or max_samples_per_shard).
+    2. Create a single ProcessPoolExecutor reused across all chunks.
+    3. Process, optionally shuffle, write, and flush each chunk.
 
-    1. Partition the sample list into chunks of ``max_samples_per_shard``
-       (or a default of 500 if not configured).
-    2. Create a **single** ``ProcessPoolExecutor`` whose workers
-       initialise their tokenizers once and are reused across all
-       chunks (avoiding repeated startup overhead).
-    3. For each chunk, dispatch processing to the pool.
-    4. Optionally shuffle the chunk (if ``config.shuffling == "local"``).
-    5. Write the processed chunk to a shard file.
-    6. Flush the chunk from memory before processing the next one.
-
-    Parameters
-    ----------
-    samples : list[VQASample]
-        Ingested samples (already globally-shuffled if configured).
-    config : PipelineConfig
-        Full pipeline config.
-    output_dir : Path
-        Directory where shard files are written.
-    rng : np.random.RandomState
-        Seeded random state for reproducible shuffling.
-
-    Returns
-    -------
-    tuple[int, int, int, int]
-        (last_shard_index, total_bytes, processed_count, error_count)
+    Returns (last_shard_index, total_bytes, processed_count, error_count).
     """
     max_per_shard = config.shard.max_samples_per_shard
     if max_per_shard is None or max_per_shard <= 0:
-        max_per_shard = 500  # sensible default for streaming
+        max_per_shard = config.streaming_chunk_size
 
     num_workers = config.num_workers
     do_local_shuffle = config.shuffling == "local"
@@ -412,14 +298,10 @@ def _run_streaming_pipeline(
     total_processed = 0
     total_errors = 0
 
-    # Partition into chunks
     num_chunks = (len(samples) + max_per_shard - 1) // max_per_shard
-
-    # Decide whether to use a process pool or sequential processing.
     effective_workers = min(num_workers, os.cpu_count() or 1)
     use_pool = effective_workers >= 2
 
-    # ── Create the pool / tokenizer ONCE for all chunks ───────────
     executor: ProcessPoolExecutor | None = None
     tokenizer: TextTokenizer | None = None
 
@@ -430,8 +312,7 @@ def _run_streaming_pipeline(
             initargs=(config,),
         )
         logger.info(
-            "Created process pool with %d workers (tokenizers initialising).",
-            effective_workers,
+            "Created process pool with %d workers.", effective_workers,
         )
     else:
         tokenizer = TextTokenizer(config.tokenizer)
@@ -447,7 +328,6 @@ def _run_streaming_pipeline(
                 chunk_idx + 1, num_chunks, len(chunk), num_workers,
             )
 
-            # Process the chunk (pool is reused across chunks)
             processed, error_count = _process_chunk_with_executor(
                 chunk, config, executor, tokenizer,
             )
@@ -460,12 +340,10 @@ def _run_streaming_pipeline(
                 )
                 continue
 
-            # Optional local shuffle within this shard's samples
             if do_local_shuffle:
                 perm = rng.permutation(len(processed)).tolist()
                 processed = [processed[i] for i in perm]
 
-            # Write the processed chunk to a shard
             writer = ShardWriter(config.shard, config.image, config.tokenizer)
             shard_path = output_dir / f"shard_{shard_index:04d}.bin"
             writer.open(shard_path)
@@ -485,14 +363,10 @@ def _run_streaming_pipeline(
             )
             shard_index += 1
 
-            # ── Memory flush ──────────────────────────────────────
-            # Release the processed chunk and trigger garbage
-            # collection so we don't accumulate tensors across chunks.
             del processed, chunk
             gc.collect()
 
     finally:
-        # ── Ensure the pool is shut down cleanly ──────────────────
         if executor is not None:
             executor.shutdown(wait=True)
             logger.info("Process pool shut down.")
@@ -501,29 +375,15 @@ def _run_streaming_pipeline(
     return last_index, total_bytes, total_processed, total_errors
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
     """Execute the full preprocessing pipeline.
 
-    Parameters
-    ----------
-    config : PipelineConfig
-        Complete pipeline configuration.
-
-    Returns
-    -------
-    dict[str, Any]
-        Summary statistics: total samples, shards written, processing
-        time, bytes written.
+    Returns a summary dict with total samples, shards written, timing, etc.
     """
     _setup_logging(config.log_level)
 
     start_time = time.time()
 
-    # Stage 1: Ingest the dataset
     logger.info("=== Stage 1: Ingestion ===")
     samples = ingest_dataset(config)
     logger.info("Ingested %d samples.", len(samples))
@@ -532,7 +392,6 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
         logger.warning("No samples ingested. Pipeline has nothing to process.")
         return {"total_samples": 0, "shards_written": 0, "elapsed_seconds": 0.0}
 
-    # Stage 1.5: Apply global shuffling (if configured)
     rng = np.random.RandomState(config.seed)
 
     if config.shuffling == "global":
@@ -545,7 +404,6 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
     else:
         logger.info("=== Shuffling: none ===")
 
-    # Stage 2 + 3 + 4: Process and write shards
     output_dir = Path(config.shard.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -553,10 +411,9 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
     total_bytes = 0
     processed_count = 0
     error_count = 0
+    progress_interval = config.progress_interval
 
-    # ── Dispatch to the appropriate pipeline strategy ─────────────
     if config.num_workers >= 1:
-        # Phase 4: Streaming multiprocessing pipeline
         logger.info(
             "=== Stage 2+3+4: Streaming multiprocessing (%d workers) ===",
             config.num_workers,
@@ -565,7 +422,6 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
             _run_streaming_pipeline(samples, config, output_dir, rng)
         )
     elif config.shuffling == "local":
-        # Legacy: local shuffling (sequential)
         logger.info("=== Stage 2+3+4: Sequential local-shuffle pipeline ===")
         tokenizer = TextTokenizer(config.tokenizer)
         shard_index, total_bytes, processed_count, error_count = (
@@ -574,7 +430,6 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
             )
         )
     else:
-        # Legacy: sequential pipeline (no shuffling or global-shuffled)
         logger.info("=== Stage 2+3+4: Sequential pipeline ===")
         tokenizer = TextTokenizer(config.tokenizer)
 
@@ -584,13 +439,11 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
 
         for i, sample in enumerate(samples):
             try:
-                # Prepare metadata (include sample_id for traceability)
                 metadata = dict(sample.metadata)
                 metadata["sample_id"] = sample.sample_id
                 metadata["original_width"] = sample.image_width
                 metadata["original_height"] = sample.image_height
 
-                # Determine preprocessing path
                 use_v2 = (
                     config.shard.format_version >= 2
                     and config.image.dynamic_padding
@@ -606,11 +459,14 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
                 else:
                     image_arr = normalize_image(sample.image_bytes, config.image)
 
-                # Tokenize question and answer
                 q_tokens = tokenizer.tokenize(sample.question)
                 a_tokens = tokenizer.tokenize(sample.answer)
 
-                # Write to the current shard
+                # Store actual token lengths when dynamic text padding is enabled
+                if config.tokenizer.dynamic_text_padding:
+                    metadata["actual_question_length"] = q_tokens.actual_length
+                    metadata["actual_answer_length"] = a_tokens.actual_length
+
                 write_kwargs: dict[str, Any] = {
                     "image_tensor": image_arr,
                     "question_ids": q_tokens.input_ids,
@@ -624,10 +480,8 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
                     write_kwargs["orig_width"] = orig_w
 
                 writer.add_sample(**write_kwargs)
-
                 processed_count += 1
 
-                # Check if we need to rotate to a new shard
                 if writer.should_rotate():
                     total_bytes += writer.current_size_bytes
                     writer.close()
@@ -638,17 +492,17 @@ def run_pipeline(config: PipelineConfig) -> dict[str, Any]:
                     logger.info("Rotated to shard %d.", shard_index)
 
             except Exception as exc:
+                if config.fail_fast:
+                    raise
                 logger.warning(
                     "Failed to process sample %d (id=%s): %s",
                     i, sample.sample_id, exc,
                 )
                 error_count += 1
 
-            # Progress logging every 50 samples
-            if (i + 1) % 50 == 0:
+            if (i + 1) % progress_interval == 0:
                 logger.info("Processed %d / %d samples...", i + 1, len(samples))
 
-        # Close the final shard
         total_bytes += writer.current_size_bytes
         writer.close()
 
@@ -687,7 +541,6 @@ def main() -> None:
     config = load_config(args.config)
     summary = run_pipeline(config)
 
-    # Exit with error code if any samples failed
     if summary.get("error_samples", 0) > 0:
         sys.exit(1)
 

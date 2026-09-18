@@ -1,10 +1,9 @@
 """
 Configuration system for the preprocessing pipeline.
 
-All configurable parameters -- image processing, tokenization, dataset source,
-shard layout, pipeline behavior -- are defined as frozen dataclasses and loaded
-from a single YAML file.  Nothing is hardcoded: behavior is changed by editing
-config, not code.
+All configurable parameters are defined as frozen dataclasses and loaded
+from a single YAML file (pipeline.yaml in this directory). Nothing is
+hardcoded: behavior is changed by editing config, not code.
 
 The config hierarchy is:
     PipelineConfig
@@ -30,21 +29,15 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Config validation error
-# ---------------------------------------------------------------------------
 class ConfigError(ValueError):
     """Raised when a configuration file is invalid, missing, or malformed."""
 
 
-# ---------------------------------------------------------------------------
-# Utility: deep merge two dicts
-# ---------------------------------------------------------------------------
 def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge *overrides* into *base*, returning a new dict.
 
-    Nested dicts are merged recursively.  Non-dict values in overrides
-    replace the corresponding value in base.  Keys only in base are kept.
+    Nested dicts are merged recursively. Non-dict values in overrides
+    replace the corresponding value in base. Keys only in base are kept.
     """
     result = copy.deepcopy(base)
     for key, value in overrides.items():
@@ -55,9 +48,6 @@ def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, An
     return result
 
 
-# ---------------------------------------------------------------------------
-# Utility: convert YAML lists to tuples for immutable config fields
-# ---------------------------------------------------------------------------
 _TUPLE_FIELDS = frozenset({
     "target_size",
     "normalization_mean",
@@ -82,9 +72,6 @@ def _listify_to_tuples(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Dataset configuration
-# ---------------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class DatasetConfig:
     """Configuration for the dataset source and column mapping.
@@ -100,7 +87,6 @@ class DatasetConfig:
     column_mapping : dict[str, str]
         Maps canonical field names to dataset-specific column names.
         Keys: "image", "question", "answer", "id", "reasoning".
-        Values: the actual column names in the dataset.
     max_samples : int | None
         If set, only ingest this many samples (useful for debugging).
     streaming : bool
@@ -128,9 +114,6 @@ class DatasetConfig:
         return cls(**filtered)
 
 
-# ---------------------------------------------------------------------------
-# Image configuration
-# ---------------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class ImageConfig:
     """Configuration for image preprocessing.
@@ -144,23 +127,19 @@ class ImageConfig:
     color_space : str
         Target color space ("RGB", "BGR", "L").
     normalization_mean : tuple[float, ...]
-        Per-channel mean for normalization (ImageNet default).
+        Per-channel mean for normalization.
     normalization_std : tuple[float, ...]
-        Per-channel std for normalization (ImageNet default).
+        Per-channel std for normalization.
     interpolation : str
         Resize interpolation method ("bicubic", "bilinear", "lanczos", "nearest").
     pad_value : int
         Pixel value used for padding (0-255).
     max_image_dim : int
         Maximum image dimension for aspect-ratio-preserving resize (v2 format).
-        The longest side is scaled to this value; the shorter side is computed
-        to preserve the original aspect ratio.
     storage_dtype : str
-        Storage data type in binary shards: ``"float32"`` (v1, normalized) or
-        ``"uint8"`` (v2, raw pixels — normalization deferred to C++ loader).
+        Storage data type: "float32" (v1) or "uint8" (v2, deferred normalization).
     dynamic_padding : bool
-        If True, store per-sample dimensions and pad dynamically at batch
-        collation time.  Eliminates static padding waste.
+        If True, store per-sample dimensions and pad at batch collation time.
     """
 
     target_size: tuple[int, int] = (384, 384)
@@ -182,9 +161,6 @@ class ImageConfig:
         return cls(**filtered)
 
 
-# ---------------------------------------------------------------------------
-# Tokenizer configuration
-# ---------------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class TokenizerConfig:
     """Configuration for text tokenization.
@@ -200,10 +176,14 @@ class TokenizerConfig:
     truncation : bool
         Whether to truncate sequences exceeding max_length.
     trust_remote_code : bool
-        Whether to allow custom tokenizer code (required by some models
-        like jais-13b-chat).
+        Whether to allow custom tokenizer code (required by some models).
     add_special_tokens : bool
         Whether the tokenizer should add BOS/EOS tokens.
+    dynamic_text_padding : bool
+        If True, tokenize without padding and defer padding to batch
+        collation time. Actual token lengths are stored in metadata.
+        If False (default), pad every sequence to max_length at
+        preprocessing time (static padding).
     """
 
     model_name_or_path: str = "inceptionai/jais-13b-chat"
@@ -212,6 +192,7 @@ class TokenizerConfig:
     truncation: bool = True
     trust_remote_code: bool = True
     add_special_tokens: bool = True
+    dynamic_text_padding: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TokenizerConfig:
@@ -221,9 +202,6 @@ class TokenizerConfig:
         return cls(**filtered)
 
 
-# ---------------------------------------------------------------------------
-# Shard configuration
-# ---------------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class ShardConfig:
     """Configuration for binary shard output.
@@ -235,17 +213,15 @@ class ShardConfig:
     shard_size_mb : int
         Target shard size in megabytes.
     max_samples_per_shard : int | None
-        Maximum number of samples per shard file.  When reached the
-        current shard is finalized and a new one is opened.  None means
-        no sample-count limit (only size-based rotation applies).
+        Maximum samples per shard file. None means size-based rotation only.
     compression : str | None
-        Compression algorithm (None for uncompressed, "lz4" for LZ4).
+        Compression algorithm (None or "lz4").
     alignment_bytes : int
-        Byte alignment for memory-mapped access in C++.
+        Byte alignment for memory-mapped access (must be power of 2).
     format_version : int
-        Binary shard format version.  ``1`` = legacy float32 with fixed
-        dimensions.  ``2`` = uint8 storage with per-sample dimensions and
-        flags field for compression and dynamic padding.
+        Binary shard format version: 1 (legacy float32) or 2 (uint8 + per-sample dims).
+    manifest_path : str | None
+        Path for the shard manifest JSON output. None disables manifest generation.
     """
 
     output_dir: str = "./output/shards"
@@ -254,6 +230,7 @@ class ShardConfig:
     compression: str | None = None
     alignment_bytes: int = 64
     format_version: int = 2
+    manifest_path: str | None = "./output/shards/manifest.json"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ShardConfig:
@@ -263,9 +240,6 @@ class ShardConfig:
         return cls(**filtered)
 
 
-# ---------------------------------------------------------------------------
-# Top-level pipeline configuration
-# ---------------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class PipelineConfig:
     """Complete pipeline configuration.
@@ -284,15 +258,21 @@ class PipelineConfig:
     shard : ShardConfig
         Binary shard output parameters.
     shuffling : str
-        Sample shuffling strategy: ``"none"`` (default, no shuffling),
-        ``"local"`` (in-shard shuffling), or ``"global"``
-        (cross-shard shuffling of the entire dataset).
+        Sample shuffling strategy: "none", "local", or "global".
     num_workers : int
         Number of parallel preprocessing workers (0 = main thread only).
     log_level : str
         Logging verbosity.
     seed : int
         Global random seed for reproducibility.
+    progress_interval : int
+        How often (in samples) to log progress during processing.
+    streaming_chunk_size : int
+        Default chunk size for the streaming pipeline when
+        max_samples_per_shard is not set.
+    fail_fast : bool
+        If True, abort on first sample processing error.
+        If False, skip failed samples and continue.
     """
 
     dataset: DatasetConfig = dataclasses.field(default_factory=DatasetConfig)
@@ -303,6 +283,9 @@ class PipelineConfig:
     num_workers: int = 4
     log_level: str = "INFO"
     seed: int = 42
+    progress_interval: int = 50
+    streaming_chunk_size: int = 500
+    fail_fast: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PipelineConfig:
@@ -316,7 +299,10 @@ class PipelineConfig:
         tokenizer = TokenizerConfig.from_dict(data.get("tokenizer", {}))
         shard = ShardConfig.from_dict(data.get("shard", {}))
 
-        top_level_keys = {"shuffling", "num_workers", "log_level", "seed"}
+        top_level_keys = {
+            "shuffling", "num_workers", "log_level", "seed",
+            "progress_interval", "streaming_chunk_size", "fail_fast",
+        }
         top = {k: v for k, v in data.items() if k in top_level_keys}
 
         return cls(
@@ -332,9 +318,107 @@ class PipelineConfig:
         return dataclasses.asdict(self)
 
 
-# ---------------------------------------------------------------------------
-# Config loader
-# ---------------------------------------------------------------------------
+_VALID_SHUFFLING = {"none", "local", "global"}
+_VALID_RESIZE_STRATEGIES = {"resize_and_pad", "center_crop", "resize"}
+_VALID_INTERPOLATIONS = {"bicubic", "bilinear", "lanczos", "nearest"}
+_VALID_COLOR_SPACES = {"RGB", "BGR", "L"}
+_VALID_STORAGE_DTYPES = {"float32", "uint8"}
+_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_VALID_COMPRESSIONS = {None, "lz4"}
+_VALID_FORMAT_VERSIONS = {1, 2}
+
+
+def _is_power_of_two(n: int) -> bool:
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _validate_config(config: PipelineConfig, path: Path) -> None:
+    """Validate all config fields, raising ConfigError on invalid values."""
+    if config.shuffling not in _VALID_SHUFFLING:
+        raise ConfigError(
+            f"Invalid shuffling '{config.shuffling}' in {path}. "
+            f"Must be one of: {sorted(_VALID_SHUFFLING)}"
+        )
+
+    if config.log_level.upper() not in _VALID_LOG_LEVELS:
+        raise ConfigError(
+            f"Invalid log_level '{config.log_level}' in {path}. "
+            f"Must be one of: {sorted(_VALID_LOG_LEVELS)}"
+        )
+
+    if config.num_workers < 0:
+        raise ConfigError(f"num_workers must be >= 0, got {config.num_workers}")
+
+    if config.progress_interval < 1:
+        raise ConfigError(f"progress_interval must be >= 1, got {config.progress_interval}")
+
+    if config.streaming_chunk_size < 1:
+        raise ConfigError(
+            f"streaming_chunk_size must be >= 1, got {config.streaming_chunk_size}"
+        )
+
+    img = config.image
+    if img.resize_strategy.lower() not in _VALID_RESIZE_STRATEGIES:
+        raise ConfigError(
+            f"Invalid resize_strategy '{img.resize_strategy}'. "
+            f"Must be one of: {sorted(_VALID_RESIZE_STRATEGIES)}"
+        )
+
+    if img.interpolation.lower() not in _VALID_INTERPOLATIONS:
+        raise ConfigError(
+            f"Invalid interpolation '{img.interpolation}'. "
+            f"Must be one of: {sorted(_VALID_INTERPOLATIONS)}"
+        )
+
+    if img.color_space.upper() not in _VALID_COLOR_SPACES:
+        raise ConfigError(
+            f"Invalid color_space '{img.color_space}'. "
+            f"Must be one of: {sorted(_VALID_COLOR_SPACES)}"
+        )
+
+    if img.storage_dtype not in _VALID_STORAGE_DTYPES:
+        raise ConfigError(
+            f"Invalid storage_dtype '{img.storage_dtype}'. "
+            f"Must be one of: {sorted(_VALID_STORAGE_DTYPES)}"
+        )
+
+    if len(img.target_size) != 2 or any(d < 1 for d in img.target_size):
+        raise ConfigError(
+            f"target_size must be a pair of positive integers, got {img.target_size}"
+        )
+
+    if img.max_image_dim < 1:
+        raise ConfigError(f"max_image_dim must be >= 1, got {img.max_image_dim}")
+
+    if img.pad_value < 0 or img.pad_value > 255:
+        raise ConfigError(f"pad_value must be in [0, 255], got {img.pad_value}")
+
+    shard = config.shard
+    if shard.format_version not in _VALID_FORMAT_VERSIONS:
+        raise ConfigError(
+            f"Invalid format_version {shard.format_version}. "
+            f"Must be one of: {sorted(_VALID_FORMAT_VERSIONS)}"
+        )
+
+    if shard.compression not in _VALID_COMPRESSIONS:
+        raise ConfigError(
+            f"Invalid compression '{shard.compression}'. "
+            f"Must be one of: {sorted(_VALID_COMPRESSIONS, key=str)}"
+        )
+
+    if not _is_power_of_two(shard.alignment_bytes):
+        raise ConfigError(
+            f"alignment_bytes must be a power of 2, got {shard.alignment_bytes}"
+        )
+
+    if shard.shard_size_mb < 1:
+        raise ConfigError(f"shard_size_mb must be >= 1, got {shard.shard_size_mb}")
+
+    tok = config.tokenizer
+    if tok.max_length < 1:
+        raise ConfigError(f"tokenizer.max_length must be >= 1, got {tok.max_length}")
+
+
 def load_config(path: str | Path) -> PipelineConfig:
     """Load a pipeline configuration from a YAML file.
 
@@ -351,8 +435,8 @@ def load_config(path: str | Path) -> PipelineConfig:
     Raises
     ------
     ConfigError
-        If the file cannot be read, is not valid YAML, or does not
-        contain a top-level mapping.
+        If the file cannot be read, is not valid YAML, or contains
+        invalid parameter values.
     """
     path = Path(path)
 
@@ -372,7 +456,6 @@ def load_config(path: str | Path) -> PipelineConfig:
             f"Expected a YAML mapping at top level in {path}, got {type(raw).__name__}"
         )
 
-    # Convert YAML lists to tuples where the dataclasses expect them
     raw = _listify_to_tuples(raw)
 
     try:
@@ -380,13 +463,7 @@ def load_config(path: str | Path) -> PipelineConfig:
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Failed to construct PipelineConfig from {path}: {exc}") from exc
 
-    # Validate shuffling parameter
-    _VALID_SHUFFLING = {"none", "local", "global"}
-    if config.shuffling not in _VALID_SHUFFLING:
-        raise ConfigError(
-            f"Invalid shuffling value '{config.shuffling}' in {path}. "
-            f"Must be one of: {sorted(_VALID_SHUFFLING)}"
-        )
+    _validate_config(config, path)
 
     logger.info(
         "Configuration loaded from %s: dataset=%s, split=%s",

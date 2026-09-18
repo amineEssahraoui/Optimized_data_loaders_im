@@ -1,0 +1,92 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Distribution and packaging
+*.egg-info/
+*.egg
+dist/
+build/
+sdist/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Compiled extensions and shared libraries
+*.pyd
+*.so
+*.dll
+*.dylib
+
+# C/C++ build artifacts
+*.obj
+*.o
+*.lib
+*.a
+*.exp
+*.ilk
+*.pdb
+*.iobj
+*.ipdb
+*.tlog
+*.log
+*.recipe
+*.lastbuildstate
+
+# CMake build directories
+loader/build/
+build_loader/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# ruff
+.ruff_cache/
+
+# Tests, benchmarks, e2e, and validation (non-core)
+tests/
+validation/
+
+# Documentation (non-core)
+docs/
+
+# Output and generated data
+output/
+
+# LaTeX auxiliary and source files (non-core)
+*.tex
+*.aux
+*.log
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+
+# Old plan files
+implementation_plan_phase4

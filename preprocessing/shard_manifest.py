@@ -23,20 +23,9 @@ Manifest JSON format::
                 "sample_count": 250,
                 "size_bytes": 67108864,
                 "checksum_crc32": "a1b2c3d4"
-            },
-            ...
+            }
         ]
     }
-
-Usage::
-
-    # Build manifest from shard directory
-    manifest = build_manifest(Path("output/shards"))
-    manifest.save(Path("output/shards/manifest.json"))
-
-    # Load and assign shards for distributed training
-    manifest = ShardManifest.load(Path("output/shards/manifest.json"))
-    my_shards = assign_shards(manifest, rank=2, world_size=8)
 """
 
 from __future__ import annotations
@@ -52,32 +41,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Constants matching shard_writer.py
 _MAGIC_START = b"VLMSHARD"
 _HEADER_SIZE = 64
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
-
 @dataclasses.dataclass
 class ShardInfo:
-    """Metadata for a single shard file.
-
-    Attributes
-    ----------
-    path : str
-        Relative path to the shard file (relative to the manifest
-        directory, or absolute if specified).
-    sample_count : int
-        Number of samples contained in this shard.
-    size_bytes : int
-        Total file size in bytes.
-    checksum_crc32 : str
-        Hex-encoded CRC32 checksum of the shard file contents
-        (excluding the footer's own checksum/magic).
-    """
+    """Metadata for a single shard file."""
 
     path: str
     sample_count: int
@@ -85,7 +55,6 @@ class ShardInfo:
     checksum_crc32: str
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dictionary."""
         return {
             "path": self.path,
             "sample_count": self.sample_count,
@@ -95,7 +64,6 @@ class ShardInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ShardInfo:
-        """Deserialize from a plain dictionary."""
         return cls(
             path=data["path"],
             sample_count=int(data["sample_count"]),
@@ -106,23 +74,7 @@ class ShardInfo:
 
 @dataclasses.dataclass
 class ShardManifest:
-    """Complete manifest for a set of shards.
-
-    Attributes
-    ----------
-    version : int
-        Manifest format version (currently 1).
-    created_at : str
-        ISO 8601 timestamp of when the manifest was created.
-    total_samples : int
-        Total number of samples across all shards.
-    total_shards : int
-        Number of shard files.
-    total_bytes : int
-        Total size of all shard files in bytes.
-    shards : list[ShardInfo]
-        Ordered list of shard metadata entries.
-    """
+    """Complete manifest for a set of shards."""
 
     version: int
     created_at: str
@@ -132,7 +84,6 @@ class ShardManifest:
     shards: list[ShardInfo]
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dictionary."""
         return {
             "version": self.version,
             "created_at": self.created_at,
@@ -143,14 +94,7 @@ class ShardManifest:
         }
 
     def save(self, path: Path | str) -> None:
-        """Write the manifest to a JSON file.
-
-        Parameters
-        ----------
-        path : Path | str
-            Output file path.  Parent directories are created
-            automatically if they don't exist.
-        """
+        """Write the manifest to a JSON file."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
@@ -159,27 +103,7 @@ class ShardManifest:
 
     @classmethod
     def load(cls, path: Path | str) -> ShardManifest:
-        """Load a manifest from a JSON file.
-
-        Parameters
-        ----------
-        path : Path | str
-            Path to the manifest JSON file.
-
-        Returns
-        -------
-        ShardManifest
-            The loaded manifest.
-
-        Raises
-        ------
-        FileNotFoundError
-            If the file does not exist.
-        json.JSONDecodeError
-            If the file is not valid JSON.
-        KeyError
-            If required fields are missing.
-        """
+        """Load a manifest from a JSON file."""
         path = Path(path)
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -208,28 +132,8 @@ class ShardManifest:
         )
 
 
-# ---------------------------------------------------------------------------
-# Shard header parsing (lightweight — reads only the 64-byte header)
-# ---------------------------------------------------------------------------
-
 def _parse_shard_header(path: Path) -> tuple[int, int]:
-    """Read the sample count and format version from a shard header.
-
-    Parameters
-    ----------
-    path : Path
-        Path to the shard file.
-
-    Returns
-    -------
-    tuple[int, int]
-        (sample_count, format_version)
-
-    Raises
-    ------
-    ValueError
-        If the file is too small or has an invalid magic number.
-    """
+    """Read the sample count and format version from a shard header."""
     with open(path, "rb") as fh:
         header = fh.read(_HEADER_SIZE)
 
@@ -246,7 +150,6 @@ def _parse_shard_header(path: Path) -> tuple[int, int]:
             f"got {magic!r}"
         )
 
-    # Unpack version and sample_count from header bytes 8-16
     version, sample_count = struct.unpack_from("<II", header, 8)
     return sample_count, version
 
@@ -254,19 +157,8 @@ def _parse_shard_header(path: Path) -> tuple[int, int]:
 def _compute_file_crc32(path: Path, exclude_footer: bool = True) -> str:
     """Compute CRC32 hex checksum of a shard file.
 
-    Parameters
-    ----------
-    path : Path
-        Path to the shard file.
-    exclude_footer : bool
-        If True, exclude the last 12 bytes (4-byte CRC32 + 8-byte
-        SHARDEND magic) from the checksum calculation.  This matches
-        how the shard writer computes checksums.
-
-    Returns
-    -------
-    str
-        Hex-encoded CRC32 (lowercase, 8 characters).
+    If exclude_footer is True, the last 12 bytes (CRC32 + SHARDEND magic)
+    are excluded, matching the shard writer's checksum calculation.
     """
     data = path.read_bytes()
     if exclude_footer and len(data) > 12:
@@ -274,10 +166,6 @@ def _compute_file_crc32(path: Path, exclude_footer: bool = True) -> str:
     checksum = zlib.crc32(data) & 0xFFFFFFFF
     return f"{checksum:08x}"
 
-
-# ---------------------------------------------------------------------------
-# Manifest builder
-# ---------------------------------------------------------------------------
 
 def build_manifest(
     shard_dir: Path | str,
@@ -292,23 +180,14 @@ def build_manifest(
     shard_dir : Path | str
         Directory containing shard files.
     glob_pattern : str
-        Glob pattern to match shard files.  Default matches the
-        naming convention used by ``ShardWriter``.
+        Glob pattern to match shard files.
     compute_checksums : bool
-        If True, compute CRC32 checksums for each shard (can be slow
-        for very large files).
+        If True, compute CRC32 checksums for each shard.
 
     Returns
     -------
     ShardManifest
         The constructed manifest.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the directory does not exist.
-    ValueError
-        If no shard files are found or a file has an invalid header.
     """
     shard_dir = Path(shard_dir)
     if not shard_dir.is_dir():
@@ -360,10 +239,6 @@ def build_manifest(
     return manifest
 
 
-# ---------------------------------------------------------------------------
-# Distributed shard assignment
-# ---------------------------------------------------------------------------
-
 def assign_shards(
     manifest: ShardManifest,
     rank: int,
@@ -371,33 +246,7 @@ def assign_shards(
 ) -> list[ShardInfo]:
     """Deterministically assign shards to a rank for distributed training.
 
-    Uses round-robin assignment: shard ``i`` is assigned to rank
-    ``i % world_size``.  This is deterministic — given the same
-    manifest, rank, and world_size, the function always returns the
-    same list.
-
-    When ``world_size > total_shards``, some ranks will receive an
-    empty list (they should be handled gracefully by the training
-    loop, e.g. by skipping or loading a dummy batch).
-
-    Parameters
-    ----------
-    manifest : ShardManifest
-        The shard manifest (must have shards in a fixed order).
-    rank : int
-        This process's rank (0-based).
-    world_size : int
-        Total number of processes.
-
-    Returns
-    -------
-    list[ShardInfo]
-        Shards assigned to this rank, in manifest order.
-
-    Raises
-    ------
-    ValueError
-        If rank or world_size are invalid.
+    Uses round-robin assignment: shard i goes to rank (i % world_size).
     """
     if world_size < 1:
         raise ValueError(f"world_size must be >= 1, got {world_size}")
