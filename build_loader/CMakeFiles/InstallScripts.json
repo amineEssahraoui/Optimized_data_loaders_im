@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"C:/Users/PC/Desktop/vlm-image-loader/build_loader/cmake_install.cmake",
-		"C:/Users/PC/Desktop/vlm-image-loader/build_loader/bindings/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
