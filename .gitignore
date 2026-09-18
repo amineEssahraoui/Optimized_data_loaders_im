@@ -65,8 +65,6 @@ desktop.ini
 # ruff
 .ruff_cache/
 
-# Tests, benchmarks, e2e, and validation (non-core)
-tests/
 validation/
 
 # Documentation (non-core)
