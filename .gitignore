@@ -87,6 +87,3 @@ output/
 *.synctex.gz
 *.fdb_latexmk
 *.fls
-
-# Old plan files
-implementation_plan_phase4
