@@ -5,6 +5,15 @@ post-training on Visual Question Answering (VQA) datasets. Converts raw HuggingF
 datasets into optimized binary shards that a zero-dependency C++ runtime loader can
 consume directly.
 
+## Key Features
+
+- **End-to-End Pipeline**: Ingests, normalizes, tokenizes, and serializes raw VQA data.
+- **High-Performance C++ Async Loader**: Memory-mapped binary shard reading with background worker threads and SIMD-accelerated normalization.
+- **Safe Mode Integrity**: Optional CRC32 verification for memory-mapped shards to guarantee data integrity before processing.
+- **Comprehensive Testing**: Automated test suite for streaming pipelines, exact bit validation, manifest logic, and partitioning constraints.
+- **Modular Architecture**: All behavior is strictly controlled by a centralized YAML configuration (`configs/pipeline.yaml`).
+- **Benchmarking Tools**: Included utilities for evaluating pipeline and dataloader throughput.
+
 ## Architecture
 
 The system is split into two stages with a clear binary boundary:
@@ -13,30 +22,20 @@ The system is split into two stages with a clear binary boundary:
 |-------|----------|------|
 | **Preprocessing** | Python | Ingest raw datasets, normalize images, tokenize text, serialize to binary shards |
 | **Runtime Loader** | C++ | Read shards via memory-mapping, decode content, build batches, handle distributed sharding |
-| **Bridge** | pybind11 | Development/testing only -- not a production dependency |
+| **Bridge** | pybind11 | Python bindings bridging the native C++ dataloader into the Python runtime |
 
-All pipeline behavior is controlled exclusively through `configs/pipeline.yaml`. No
-processing parameters are hardcoded. The configuration reader (`configs/config.py`)
-resides in the same directory as the YAML file.
+All pipeline behavior is controlled exclusively through `configs/pipeline.yaml`. No processing parameters are hardcoded.
 
 ## Repository Layout
 
 ```
 configs/               Configuration system (pipeline.yaml + config.py reader)
 preprocessing/         Python ingestion, normalization, tokenization, shard I/O
-  ingest.py            Dataset ingestion from HuggingFace
-  image_processor.py   Image resize, crop, pad, normalize (v1 float32 / v2 uint8)
-  tokenizer.py         Text tokenization with static or dynamic padding
-  shard_writer.py      Binary shard writer (v1 + v2 formats)
-  shard_reader.py      Python shard reader (validation/debugging only)
-  shard_manifest.py    JSON manifest and distributed shard assignment
-  pipeline.py          End-to-end orchestrator with multiprocessing support
-  schema.py            Canonical VQASample dataclass
-loader/                C++ shard reader, batching, async prefetch, SIMD normalization
-  include/             Public headers (shard_reader.h, batch.h, async_loader.h, ...)
-  src/                 Implementation (shard_reader.cpp, async_loader.cpp, ...)
-  third_party/lz4/     Vendored LZ4 decompression library
-bindings/              pybind11 bridge between C++ loader and Python (dev/test)
+loader/                C++ shard reader, batching, async prefetch, SIMD normalization, CRC32
+bindings/              pybind11 bridge between C++ loader and Python
+benchmarks/            Performance evaluation scripts for storage and throughput
+tests/                 Comprehensive automated test suite (pytest and C++ tests)
+validation/            Data validation and sanity-checking scripts
 ```
 
 ## Quick Start
@@ -45,6 +44,7 @@ bindings/              pybind11 bridge between C++ loader and Python (dev/test)
 
 - Python 3.10 or later
 - pip
+- C++17 compliant compiler (for building the loader)
 
 ### Installation
 
@@ -69,6 +69,14 @@ python -m preprocessing.pipeline
 python -m preprocessing.pipeline --config path/to/your/config.yaml
 ```
 
+### Running Tests
+
+The test suite thoroughly validates both Python logic and C++ exact-bit operations.
+
+```bash
+python -m pytest tests/
+```
+
 ### Building the C++ Loader
 
 ```bash
@@ -77,16 +85,11 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-This produces a static library (`vlm_loader.lib` / `libvlm_loader.a`) and optionally
-the pybind11 Python module (`vlm_loader_py`) if pybind11 is installed.
-
 ## Configuration Reference
 
-All parameters live in `configs/pipeline.yaml`. The configuration is organized into
-five sections:
+All parameters live in `configs/pipeline.yaml`. The configuration is organized into sections:
 
 ### dataset
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `hf_dataset_id` | string | (see YAML) | HuggingFace dataset identifier |
@@ -97,7 +100,6 @@ five sections:
 | `streaming` | bool | `false` | Use HuggingFace streaming mode |
 
 ### image
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `target_size` | [int, int] | `[384, 384]` | Target (H, W) after resize/crop |
@@ -112,7 +114,6 @@ five sections:
 | `dynamic_padding` | bool | `true` | Dynamic image padding (v2) |
 
 ### tokenizer
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `model_name_or_path` | string | `"inceptionai/jais-13b-chat"` | HuggingFace tokenizer |
@@ -123,16 +124,7 @@ five sections:
 | `add_special_tokens` | bool | `true` | Add BOS/EOS tokens |
 | `dynamic_text_padding` | bool | `false` | Dynamic text padding (see below) |
 
-**Text Padding Modes:**
-- **Static** (`dynamic_text_padding: false`): Every sequence is padded to `max_length` at
-  preprocessing time. Simpler, fixed-size token arrays in shards.
-- **Dynamic** (`dynamic_text_padding: true`): Sequences are tokenized without padding,
-  then padded to `max_length` for shard format compatibility. Actual token lengths are
-  stored in sample metadata (`actual_question_length`, `actual_answer_length`), enabling
-  the loader to reconstruct tight batches at collation time.
-
 ### shard
-
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `output_dir` | string | `"./output/shards"` | Shard output directory |
@@ -143,8 +135,12 @@ five sections:
 | `format_version` | int | `2` | Shard format: 1 (legacy) or 2 (recommended) |
 | `manifest_path` | string/null | (see YAML) | Manifest JSON output path |
 
-### Pipeline-Level
+### loader (Async Loader)
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `verify_crc` | bool | `false` | Safe Mode: Explicitly compute and verify CRC32 of mapped memory. |
 
+### Pipeline-Level
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `shuffling` | string | `"none"` | `none`, `local`, or `global` |
@@ -182,9 +178,9 @@ decompressing the entire file.
 The `shard_manifest.py` module provides:
 
 - `build_manifest(shard_dir)`: Scan a shard directory and build a JSON manifest
-- `assign_shards(manifest, rank, world_size)`: Deterministic round-robin shard
-  assignment for PyTorch DDP
+- `assign_shards(manifest, rank, world_size)`: Deterministic round-robin shard assignment for PyTorch DDP
 
 ## License
 
 Apache-2.0
+
