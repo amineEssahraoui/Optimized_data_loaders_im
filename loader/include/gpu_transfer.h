@@ -38,9 +38,7 @@
 
 #include "batch.h"
 
-// ═══════════════════════════════════════════════════════════════════
 // DLPack v0.8 types (inlined to avoid external dependency)
-// ═══════════════════════════════════════════════════════════════════
 
 #ifndef DLPACK_DLPACK_H_
 #define DLPACK_DLPACK_H_
@@ -108,9 +106,7 @@ typedef struct DLManagedTensor {
 namespace vlm {
 namespace gpu {
 
-// ═══════════════════════════════════════════════════════════════════
 // GPUBatch — holds device-side pointers for a transferred batch
-// ═══════════════════════════════════════════════════════════════════
 
 /**
  * @brief Container for GPU-resident batch data.
@@ -135,9 +131,7 @@ struct GPUBatch {
 };
 
 
-// ═══════════════════════════════════════════════════════════════════
 // CUDA path (compiled only with VLM_HAS_CUDA)
-// ═══════════════════════════════════════════════════════════════════
 
 #ifdef VLM_HAS_CUDA
 
@@ -427,9 +421,7 @@ inline DLManagedTensor* make_dlpack_int32(
 
 #else  // !VLM_HAS_CUDA
 
-// ═══════════════════════════════════════════════════════════════════
 // CPU-fallback stubs (no CUDA available)
-// ═══════════════════════════════════════════════════════════════════
 
 /**
  * @brief CPU-fallback pinned buffer (just a regular heap allocation).

@@ -37,6 +37,7 @@
 #include "spsc_queue.h"
 #include "distributed.h"
 #include "detail/sample_parser.h"
+#include "detail/crc32.h"
 
 // Vendored LZ4 (decompression only)
 extern "C" {
@@ -60,9 +61,7 @@ extern "C" {
 
 namespace vlm {
 
-// ═══════════════════════════════════════════════════════════════════
 // Per-shard metadata (header + offset table, parsed from mmap)
-// ═══════════════════════════════════════════════════════════════════
 
 namespace {
 
@@ -190,9 +189,7 @@ Sample read_sample_from_mmap(
 }  // anonymous namespace
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Global sample address: (shard_id, local_index)
-// ═══════════════════════════════════════════════════════════════════
 
 struct SampleAddress {
     uint32_t shard_id;
@@ -200,9 +197,7 @@ struct SampleAddress {
 };
 
 
-// ═══════════════════════════════════════════════════════════════════
 // AsyncShardLoaderImpl (PIMPL body)
-// ═══════════════════════════════════════════════════════════════════
 
 struct AsyncShardLoaderImpl {
     // ── Configuration ──────────────────────────────────────────────
@@ -270,6 +265,19 @@ struct AsyncShardLoaderImpl {
         for (const auto& path : config.shard_paths) {
             mapped_files.emplace_back(path);
             const auto& mf = mapped_files.back();
+
+            if (config.verify_crc) {
+                if (mf.size() < 12) {
+                    throw std::runtime_error("Shard file too small for CRC32 check: " + path);
+                }
+                uint32_t stored_crc = 0;
+                std::memcpy(&stored_crc, mf.data() + mf.size() - 12, 4);
+
+                uint32_t computed_crc = detail::crc32_update(0xFFFFFFFFu, mf.data(), mf.size() - 12);
+                if (stored_crc != (computed_crc ^ 0xFFFFFFFFu)) {
+                    throw std::runtime_error("CRC32 mismatch in async loader for file: " + path);
+                }
+            }
 
             ShardInfo si;
             si.header  = parse_header_from_mmap(mf.data(), mf.size());
@@ -704,9 +712,7 @@ struct AsyncShardLoaderImpl {
 };
 
 
-// ═══════════════════════════════════════════════════════════════════
 // AsyncShardLoader public methods (delegate to impl)
-// ═══════════════════════════════════════════════════════════════════
 
 AsyncShardLoader::AsyncShardLoader(AsyncLoaderConfig config)
     : impl_(std::make_unique<AsyncShardLoaderImpl>(std::move(config)))

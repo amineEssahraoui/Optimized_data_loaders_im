@@ -45,9 +45,7 @@
 
 namespace vlm {
 
-// ═══════════════════════════════════════════════════════════════════
 // Configuration
-// ═══════════════════════════════════════════════════════════════════
 
 /**
  * @brief Configuration for the async shard loader.
@@ -84,12 +82,13 @@ struct AsyncLoaderConfig {
 
     /// Distributed partitioning strategy ("contiguous" or "interleaved").
     std::string partition_strategy = "contiguous";
+
+    /// Safe Mode: explicitly compute and verify CRC32 of mapped memory.
+    bool verify_crc = false;
 };
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Checkpoint (lightweight: only epoch + seed)
-// ═══════════════════════════════════════════════════════════════════
 
 /**
  * @brief Minimal checkpoint state for resuming training.
@@ -103,9 +102,7 @@ struct LoaderCheckpoint {
 };
 
 
-// ═══════════════════════════════════════════════════════════════════
 // AsyncShardLoader
-// ═══════════════════════════════════════════════════════════════════
 
 // Forward-declare the implementation to hide threading details
 struct AsyncShardLoaderImpl;

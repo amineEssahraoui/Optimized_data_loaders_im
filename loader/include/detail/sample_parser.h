@@ -29,9 +29,7 @@
 namespace vlm {
 namespace detail {
 
-// ═══════════════════════════════════════════════════════════════════
 // SIMD-accelerated uint8 → float32 normalization
-// ═══════════════════════════════════════════════════════════════════
 
 #ifdef VLM_HAS_AVX2
 /**
@@ -104,9 +102,7 @@ inline void normalize_channel(
 }
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Buffer-based sample parsing (unified for compressed / uncompressed)
-// ═══════════════════════════════════════════════════════════════════
 
 /**
  * Parse a sample from a contiguous memory buffer.

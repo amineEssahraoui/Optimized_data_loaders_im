@@ -141,7 +141,7 @@ struct Batch {
         batch.image_channels = channels;
         batch.image_height = height;
         batch.image_width = width;
-        
+
         int32_t max_seq = 0;
         for (const auto& s : samples) {
             int32_t seq = 0;
@@ -225,7 +225,7 @@ struct Batch {
         const auto n = static_cast<int32_t>(samples.size());
         batch.batch_size = n;
         batch.image_channels = channels;
-        
+
         // Step 1: Find max dimensions across all samples in this batch
         int32_t max_h = 0;
         int32_t max_w = 0;
@@ -233,7 +233,7 @@ struct Batch {
         for (const auto& s : samples) {
             max_h = std::max(max_h, static_cast<int32_t>(s.actual_h));
             max_w = std::max(max_w, static_cast<int32_t>(s.actual_w));
-            
+
             int32_t seq = 0;
             for (int32_t k = tok_length - 1; k >= 0; --k) {
                 if (s.question_mask[k] != 0 || s.answer_mask[k] != 0) {
@@ -244,7 +244,7 @@ struct Batch {
             max_seq = std::max(max_seq, seq);
         }
         max_seq = std::max(1, max_seq);
-        
+
         batch.image_height = max_h;
         batch.image_width = max_w;
         batch.token_length = max_seq;
@@ -335,9 +335,7 @@ struct Batch {
 };
 
 
-// ---------------------------------------------------------------------------
 // Aspect Ratio Bucketing
-// ---------------------------------------------------------------------------
 
 /**
  * @brief Assigns sample indices to aspect-ratio buckets for minimal padding.

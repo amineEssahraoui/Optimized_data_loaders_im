@@ -25,24 +25,18 @@
 
 namespace vlm {
 
-// ---------------------------------------------------------------------------
 // Format constants (must match Python shard_writer.py exactly)
-// ---------------------------------------------------------------------------
 static constexpr uint32_t FORMAT_VERSION    = 1;
 static constexpr uint32_t FORMAT_VERSION_V2 = 2;
 static constexpr size_t   HEADER_SIZE       = 64;
 
-// ---------------------------------------------------------------------------
 // V2 header flags (bytes 40-43 of header, was reserved in v1)
-// ---------------------------------------------------------------------------
 static constexpr uint32_t FLAG_UINT8_STORAGE    = 0x01;  // bit 0
 static constexpr uint32_t FLAG_PER_SAMPLE_DIMS  = 0x02;  // bit 1
 static constexpr uint32_t FLAG_LZ4_COMPRESSED   = 0x04;  // bit 2
 static constexpr uint32_t FLAG_ZSTD_COMPRESSED  = 0x08;  // bit 3
 
-// ---------------------------------------------------------------------------
 // ShardFileHeader -- parsed from the first 64 bytes of every shard file
-// ---------------------------------------------------------------------------
 struct ShardFileHeader {
     uint32_t version;
     uint32_t sample_count;
@@ -60,9 +54,7 @@ struct ShardFileHeader {
     bool is_zstd_compressed() const { return (flags & FLAG_ZSTD_COMPRESSED) != 0; }
 };
 
-// ---------------------------------------------------------------------------
 // PerSampleDims -- 8-byte prefix in v2 sample records
-// ---------------------------------------------------------------------------
 struct PerSampleDims {
     uint16_t orig_h;
     uint16_t orig_w;
@@ -70,17 +62,13 @@ struct PerSampleDims {
     uint16_t actual_w;
 };
 
-// ---------------------------------------------------------------------------
 // Normalization parameters (passed at load time, not stored in file)
-// ---------------------------------------------------------------------------
 struct NormalizationParams {
     float mean[3] = {0.485f, 0.456f, 0.406f};  // ImageNet defaults
     float std[3]  = {0.229f, 0.224f, 0.225f};
 };
 
-// ---------------------------------------------------------------------------
 // ShardReader -- random-access reader for a single binary shard
-// ---------------------------------------------------------------------------
 class ShardReader {
 public:
     /**

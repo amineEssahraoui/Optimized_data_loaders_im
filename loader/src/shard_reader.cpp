@@ -16,6 +16,7 @@
 
 #include "shard_reader.h"
 #include "detail/sample_parser.h"
+#include "detail/crc32.h"
 
 #include <algorithm>
 #include <cstring>
@@ -33,29 +34,7 @@ namespace vlm {
 using detail::parse_sample_from_buffer;
 using detail::normalize_channel;
 
-// ═══════════════════════════════════════════════════════════════════
-// CRC32 (ISO 3309 / ITU-T V.42, same as Python zlib.crc32)
-// ═══════════════════════════════════════════════════════════════════
 namespace {
-
-struct CRC32Table {
-    uint32_t entries[256];
-    constexpr CRC32Table() : entries{} {
-        for (uint32_t i = 0; i < 256; ++i) {
-            uint32_t crc = i;
-            for (int j = 0; j < 8; ++j)
-                crc = (crc & 1u) ? (crc >> 1u) ^ 0xEDB88320u : crc >> 1u;
-            entries[i] = crc;
-        }
-    }
-};
-static constexpr CRC32Table crc32_table{};
-
-inline uint32_t crc32_update(uint32_t crc, const uint8_t* data, size_t len) {
-    for (size_t i = 0; i < len; ++i)
-        crc = crc32_table.entries[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8u);
-    return crc;
-}
 
 void assert_little_endian() {
     const uint32_t probe = 1u;
@@ -67,16 +46,12 @@ void assert_little_endian() {
 }  // anonymous namespace
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Magic constants
-// ═══════════════════════════════════════════════════════════════════
 static constexpr char MAGIC_START_STR[9] = "VLMSHARD";
 static constexpr char MAGIC_END_STR[9]   = "SHARDEND";
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Constructor / Destructor
-// ═══════════════════════════════════════════════════════════════════
 ShardReader::ShardReader(const std::string& path) : path_(path) {
     assert_little_endian();
     file_.open(path, std::ios::binary);
@@ -92,9 +67,7 @@ ShardReader::~ShardReader() {
 }
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Header parsing (64 bytes, v1 and v2)
-// ═══════════════════════════════════════════════════════════════════
 void ShardReader::parse_header() {
     char raw[HEADER_SIZE];
     file_.seekg(0);
@@ -124,9 +97,7 @@ void ShardReader::parse_header() {
 }
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Offset table parsing
-// ═══════════════════════════════════════════════════════════════════
 void ShardReader::parse_offset_table() {
     file_.seekg(static_cast<std::streamoff>(header_.offset_table_pos));
     offsets_.resize(header_.sample_count);
@@ -141,9 +112,7 @@ void ShardReader::parse_offset_table() {
 }
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Footer verification (CRC32 + end magic)
-// ═══════════════════════════════════════════════════════════════════
 void ShardReader::verify_footer() {
     const uint64_t footer_pos =
         header_.offset_table_pos
@@ -171,7 +140,7 @@ void ShardReader::verify_footer() {
             std::min(remaining, static_cast<uint64_t>(chunk_size)));
         file_.read(reinterpret_cast<char*>(buf.data()), to_read);
         const auto got = static_cast<size_t>(file_.gcount());
-        running_crc = crc32_update(running_crc, buf.data(), got);
+        running_crc = detail::crc32_update(running_crc, buf.data(), got);
         remaining -= got;
     }
     if (stored_crc != (running_crc ^ 0xFFFFFFFFu))
@@ -179,15 +148,12 @@ void ShardReader::verify_footer() {
 }
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Public accessors
-// ═══════════════════════════════════════════════════════════════════
 const ShardFileHeader& ShardReader::header() const { return header_; }
 uint32_t ShardReader::sample_count() const { return header_.sample_count; }
 void ShardReader::set_normalization(const NormalizationParams& p) { norm_ = p; }
 
 
-// ═══════════════════════════════════════════════════════════════════
 Sample ShardReader::read_sample(uint32_t index) {
     if (index >= header_.sample_count)
         throw std::out_of_range(
@@ -242,9 +208,7 @@ Sample ShardReader::read_sample(uint32_t index) {
 }
 
 
-// ═══════════════════════════════════════════════════════════════════
 // Batch reading
-// ═══════════════════════════════════════════════════════════════════
 Batch ShardReader::read_batch(const std::vector<uint32_t>& indices) {
     std::vector<Sample> samples;
     samples.reserve(indices.size());

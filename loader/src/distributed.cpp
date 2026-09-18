@@ -25,9 +25,7 @@
 
 namespace vlm {
 
-// ---------------------------------------------------------------------------
 // get_worker_indices
-// ---------------------------------------------------------------------------
 std::vector<uint32_t> get_worker_indices(
     uint32_t total_samples,
     uint32_t worker_id,
@@ -78,9 +76,7 @@ std::vector<uint32_t> get_worker_indices(
     return indices;
 }
 
-// ---------------------------------------------------------------------------
 // verify_partition
-// ---------------------------------------------------------------------------
 bool verify_partition(
     uint32_t total_samples,
     uint32_t num_workers,
