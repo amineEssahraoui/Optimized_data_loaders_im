@@ -36,6 +36,9 @@ dependencies = [
 lz4 = [
     "lz4>=4.3.0",
 ]
+dev = [
+    "pytest>=7.0.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
