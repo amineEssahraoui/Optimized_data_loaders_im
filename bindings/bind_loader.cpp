@@ -138,9 +138,7 @@ static py::dict batch_to_torch(
 PYBIND11_MODULE(vlm_loader_py, m) {
     m.doc() = "pybind11 bindings for the VLM shard loader (v1 + v2 + async)";
 
-    // -----------------------------------------------------------------------
     // ShardFileHeader
-    // -----------------------------------------------------------------------
     py::class_<vlm::ShardFileHeader>(m, "ShardFileHeader")
         .def_readonly("version", &vlm::ShardFileHeader::version)
         .def_readonly("sample_count", &vlm::ShardFileHeader::sample_count)
@@ -156,9 +154,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         .def("is_zstd_compressed", &vlm::ShardFileHeader::is_zstd_compressed)
     ;
 
-    // -----------------------------------------------------------------------
     // NormalizationParams
-    // -----------------------------------------------------------------------
     py::class_<vlm::NormalizationParams>(m, "NormalizationParams")
         .def(py::init<>())
         .def(py::init([](py::list mean, py::list std) {
@@ -172,9 +168,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         "Construct with [mean_r, mean_g, mean_b] and [std_r, std_g, std_b].")
     ;
 
-    // -----------------------------------------------------------------------
     // Sample (individual, returned as Python-friendly dict-like object)
-    // -----------------------------------------------------------------------
     py::class_<vlm::Sample>(m, "Sample")
         .def_property_readonly("image_tensor", [](const vlm::Sample& s) {
             // Return as numpy array -- we need the header info for shape,
@@ -204,9 +198,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         .def_readonly("actual_w", &vlm::Sample::actual_w)
     ;
 
-    // -----------------------------------------------------------------------
     // Batch
-    // -----------------------------------------------------------------------
     py::class_<vlm::Batch>(m, "Batch")
         .def_readonly("batch_size", &vlm::Batch::batch_size)
         .def_readonly("image_channels", &vlm::Batch::image_channels)
@@ -260,9 +252,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         "Convert batch to a dict of torch tensors on the specified device.")
     ;
 
-    // -----------------------------------------------------------------------
     // ShardReader
-    // -----------------------------------------------------------------------
     py::class_<vlm::ShardReader>(m, "ShardReader")
         .def(py::init<const std::string&>(), py::arg("path"),
              "Open a shard file and parse its header.")
@@ -277,9 +267,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         .def("read_all", &vlm::ShardReader::read_all)
     ;
 
-    // -----------------------------------------------------------------------
     // AspectRatioBucketer
-    // -----------------------------------------------------------------------
     py::class_<vlm::AspectRatioBucketer>(m, "AspectRatioBucketer")
         .def(py::init<int>(), py::arg("num_buckets") = 6)
         .def("add_sample", &vlm::AspectRatioBucketer::add_sample,
@@ -289,9 +277,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
              "Get batch-sized groups of indices from same-AR buckets.")
     ;
 
-    // -----------------------------------------------------------------------
     // Distribution utilities
-    // -----------------------------------------------------------------------
     m.def("get_worker_indices", &vlm::get_worker_indices,
           py::arg("total_samples"),
           py::arg("worker_id"),
@@ -305,13 +291,9 @@ PYBIND11_MODULE(vlm_loader_py, m) {
           py::arg("strategy") = "contiguous",
           "Verify that a partitioning covers all samples with no overlaps.");
 
-    // ===================================================================
     // Phase 3: Async Loader bindings
-    // ===================================================================
 
-    // -----------------------------------------------------------------------
     // LoaderCheckpoint
-    // -----------------------------------------------------------------------
     py::class_<vlm::LoaderCheckpoint>(m, "LoaderCheckpoint")
         .def(py::init<>())
         .def_readwrite("epoch", &vlm::LoaderCheckpoint::epoch)
@@ -322,9 +304,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         })
     ;
 
-    // -----------------------------------------------------------------------
     // AsyncLoaderConfig
-    // -----------------------------------------------------------------------
     py::class_<vlm::AsyncLoaderConfig>(m, "AsyncLoaderConfig")
         .def(py::init<>())
         .def_readwrite("shard_paths", &vlm::AsyncLoaderConfig::shard_paths)
@@ -347,9 +327,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         })
     ;
 
-    // -----------------------------------------------------------------------
     // AsyncShardLoader
-    // -----------------------------------------------------------------------
     py::class_<vlm::AsyncShardLoader>(m, "AsyncShardLoader")
         .def(py::init<vlm::AsyncLoaderConfig>(), py::arg("config"),
              R"doc(
@@ -497,9 +475,9 @@ PYBIND11_MODULE(vlm_loader_py, m) {
                 py::gil_scoped_release release;
                 batch = self.next();
             }
-            
+
             py::dict d;
-            
+
             auto make_pinned_float = [](const std::vector<float>& vec, const std::vector<ssize_t>& shape) {
                 size_t bytes = vec.size() * sizeof(float);
                 auto* pb = new vlm::gpu::PinnedBuffer(bytes);
@@ -509,7 +487,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
                 });
                 return py::array_t<float>(shape, reinterpret_cast<float*>(pb->data()), free_when_done);
             };
-            
+
             auto make_pinned_int = [](const std::vector<int32_t>& vec, const std::vector<ssize_t>& shape) {
                 size_t bytes = vec.size() * sizeof(int32_t);
                 auto* pb = new vlm::gpu::PinnedBuffer(bytes);
@@ -519,7 +497,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
                 });
                 return py::array_t<int32_t>(shape, reinterpret_cast<int32_t*>(pb->data()), free_when_done);
             };
-            
+
             d["image"] = make_pinned_float(batch.image_data, {
                 batch.batch_size, batch.image_channels, batch.image_height, batch.image_width
             });
@@ -527,12 +505,12 @@ PYBIND11_MODULE(vlm_loader_py, m) {
             d["question_mask"] = make_pinned_int(batch.question_mask, {batch.batch_size, batch.token_length});
             d["answer_ids"] = make_pinned_int(batch.answer_ids, {batch.batch_size, batch.token_length});
             d["answer_mask"] = make_pinned_int(batch.answer_mask, {batch.batch_size, batch.token_length});
-            
+
             py::list meta;
             for (const auto& m : batch.metadata_json)
                 meta.append(py::str(m));
             d["metadata"] = meta;
-            
+
             if (!batch.padding_mask.empty()) {
                 d["padding_mask"] = make_pinned_float(batch.padding_mask, {
                     batch.batch_size, 1, batch.image_height, batch.image_width
@@ -556,35 +534,35 @@ PYBIND11_MODULE(vlm_loader_py, m) {
                 py::gil_scoped_release release;
                 batch = self.next();
             }
-            
+
             vlm::gpu::PinnedBuffer staging;
             auto gb = vlm::gpu::transfer_batch(batch, staging, nullptr, device_id);
-            
+
             py::module_ torch = py::module_::import("torch.utils.dlpack");
             py::dict result;
-            
+
             auto make_tensor = [&](void* ptr, const std::vector<int64_t>& shape, bool is_float) {
-                DLManagedTensor* dlmt = is_float ? 
+                DLManagedTensor* dlmt = is_float ?
                     vlm::gpu::make_dlpack_float(ptr, shape.data(), static_cast<int32_t>(shape.size()), device_id, true) :
                     vlm::gpu::make_dlpack_int32(ptr, shape.data(), static_cast<int32_t>(shape.size()), device_id, true);
-                
+
                 py::capsule dlpack_capsule(dlmt, "dltensor", [](PyObject* obj) {
                     DLManagedTensor* dlmt = (DLManagedTensor*)PyCapsule_GetPointer(obj, "dltensor");
                     if (dlmt && dlmt->deleter) dlmt->deleter(dlmt);
                 });
                 return torch.attr("from_dlpack")(dlpack_capsule);
             };
-            
+
             result["image"] = make_tensor(gb.device_image, {gb.batch_size, gb.C, gb.H, gb.W}, true);
             result["question_ids"] = make_tensor(gb.device_q_ids, {gb.batch_size, gb.T}, false);
             result["question_mask"] = make_tensor(gb.device_q_mask, {gb.batch_size, gb.T}, false);
             result["answer_ids"] = make_tensor(gb.device_a_ids, {gb.batch_size, gb.T}, false);
             result["answer_mask"] = make_tensor(gb.device_a_mask, {gb.batch_size, gb.T}, false);
-            
+
             py::list meta;
             for (const auto& m : batch.metadata_json) meta.append(py::str(m));
             result["metadata"] = meta;
-            
+
             return result;
         }, py::arg("device_id") = 0, "Get batch transferred to GPU directly.")
 #endif
@@ -597,9 +575,7 @@ PYBIND11_MODULE(vlm_loader_py, m) {
         })
     ;
 
-    // -----------------------------------------------------------------------
     // Module-level GPU info
-    // -----------------------------------------------------------------------
     m.def("has_cuda", []() -> bool {
 #ifdef VLM_HAS_CUDA
         return true;
