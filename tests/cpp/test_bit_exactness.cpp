@@ -19,9 +19,9 @@ int main(int argc, char** argv) {
         vlm::ShardReader reader(shard_path);
 
         // Assert header constraints
-        assert(reader.GetSampleCount() == 1);
+        assert(reader.sample_count() == 1);
 
-        auto sample = reader.ReadSample(0);
+        auto sample = reader.read_sample(0);
 
         // The Python test will generate a sample with specific edge-case properties.
         // We assert these properties precisely.
